@@ -1,6 +1,6 @@
 // api/pinterest.js
+import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import { chromium as playwrightChromium } from 'playwright-core';
 
 export const config = {
     maxDuration: 60
@@ -59,30 +59,6 @@ function parseProxy(proxyStr) {
     }
 }
 
-async function launchBrowser(proxy) {
-    const launchOptions = {
-        args: [
-            ...chromium.args,
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--window-size=1920,1080',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-site-isolation-trials',
-            '--disable-web-security',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
-        ],
-        executablePath: await chromium.executablePath(),
-        headless: true,
-        ignoreDefaultArgs: ['--enable-automation'],
-    };
-    if (proxy) launchOptions.proxy = proxy;
-    return await playwrightChromium.launch(launchOptions);
-}
-
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
         return res.status(405).json({ success: false, error: 'Method not allowed' });
@@ -92,10 +68,7 @@ export default async function handler(req, res) {
 
     const cookieObjects = parseCookiesInput(cookies);
     if (!cookieObjects.length) {
-        return res.status(400).json({ 
-            success: false, 
-            error: '❌ Куки пустые или не распознаны.' 
-        });
+        return res.status(400).json({ success: false, error: '❌ Куки пустые или не распознаны.' });
     }
 
     const hasSession = cookieObjects.some(c => 
@@ -114,57 +87,49 @@ export default async function handler(req, res) {
     let page = null;
 
     try {
-        browser = await launchBrowser(proxyConfig);
+        // Используем Puppeteer вместо Playwright
+        const executablePath = await chromium.executablePath();
         
-        const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            viewport: { width: 1920, height: 1080 },
-            locale: 'en-US',
-            timezoneId: 'America/New_York',
-            extraHTTPHeaders: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0',
-            }
+        browser = await puppeteer.launch({
+            args: [
+                ...chromium.args,
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+                '--disable-blink-features=AutomationControlled',
+            ],
+            executablePath: executablePath,
+            headless: true,
         });
-        
-        await context.addCookies(cookieObjects);
+
+        const context = await browser.createIncognitoBrowserContext();
         page = await context.newPage();
 
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'es'] });
-            window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-        });
+        // Устанавливаем куки
+        await page.setCookie(...cookieObjects);
 
         await page.goto('https://www.pinterest.com/', { 
-            waitUntil: 'networkidle', 
+            waitUntil: 'networkidle2', 
             timeout: 60000 
         });
-        
+
         await page.waitForTimeout(2000);
 
         const loginCheck = await page.evaluate(() => {
             const hasCsrf = document.cookie.includes('csrftoken');
             const hasProfile = !!document.querySelector('[data-test-id="profile-image"]');
             const hasAvatar = !!document.querySelector('img[alt*="profile"]');
-            const hasUserMenu = !!document.querySelector('[data-test-id="user-menu"]');
-            return { hasCsrf, hasProfile, hasAvatar, hasUserMenu };
+            return { hasCsrf, hasProfile, hasAvatar };
         });
 
-        if (!loginCheck.hasCsrf || !(loginCheck.hasProfile || loginCheck.hasAvatar || loginCheck.hasUserMenu)) {
+        if (!loginCheck.hasCsrf || !(loginCheck.hasProfile || loginCheck.hasAvatar)) {
             await browser.close();
             return res.status(400).json({ 
                 success: false, 
-                error: '❌ Сессия не активна. Выйдите и заново войдите в Pinterest, затем экспортируйте куки.' 
+                error: '❌ Сессия не активна. Выйдите и заново войдите в Pinterest.' 
             });
         }
 
@@ -231,8 +196,7 @@ export default async function handler(req, res) {
                 boards = list.map(b => ({ 
                     id: b.id, 
                     name: b.name, 
-                    pin_count: b.pin_count || 0,
-                    description: b.description || ''
+                    pin_count: b.pin_count || 0
                 }));
             } catch (e) {}
 
@@ -266,23 +230,6 @@ export default async function handler(req, res) {
             if (!image) {
                 await browser.close();
                 return res.status(400).json({ success: false, error: '❌ Не указан Image URL!' });
-            }
-
-            try {
-                const head = await fetch(image, { method: 'HEAD' });
-                if (!head.ok) {
-                    await browser.close();
-                    return res.status(400).json({ 
-                        success: false, 
-                        error: `❌ Изображение недоступно (HTTP ${head.status})` 
-                    });
-                }
-            } catch (e) {
-                await browser.close();
-                return res.status(400).json({ 
-                    success: false, 
-                    error: `❌ Не удалось проверить изображение: ${e.message}` 
-                });
             }
 
             const result = await page.evaluate(async ({ board, title, description, link, alt, image, token }) => {
@@ -319,10 +266,7 @@ export default async function handler(req, res) {
                     const data = await response.json();
                     
                     if (data.resource_response?.data?.id) {
-                        return { 
-                            success: true, 
-                            pin_id: data.resource_response.data.id 
-                        };
+                        return { success: true, pin_id: data.resource_response.data.id };
                     }
                     
                     return { 
