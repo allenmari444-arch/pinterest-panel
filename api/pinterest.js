@@ -1,8 +1,12 @@
 // api/pinterest.js
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
+import express from 'express';
 
-export const config = {
+const app = express();
+app.use(express.json());
+
+const config = {
     maxDuration: 60
 };
 
@@ -59,11 +63,7 @@ function parseProxy(proxyStr) {
     }
 }
 
-export default async function handler(req, res) {
-    if (req.method !== 'POST') {
-        return res.status(405).json({ success: false, error: 'Method not allowed' });
-    }
-
+app.post('/api/pinterest', async (req, res) => {
     const { action, proxy, cookies, board, title, description, link, alt, image } = req.body;
 
     const cookieObjects = parseCookiesInput(cookies);
@@ -87,7 +87,6 @@ export default async function handler(req, res) {
     let page = null;
 
     try {
-        // ИСПРАВЛЕНО: убрал ('chrome')
         const executablePath = await chromium.executablePath();
         
         browser = await puppeteer.launch({
@@ -310,4 +309,11 @@ export default async function handler(req, res) {
             error: '❌ Ошибка сервера: ' + error.message 
         });
     }
-}
+});
+
+// === ЗАПУСКАЕМ СЕРВЕР ===
+const port = process.env.PORT || 3000;
+app.listen(port, '0.0.0.0', () => {
+    console.log(`🚀 Pinterest Panel API запущен на порту ${port}`);
+    console.log(`📡 Доступен по адресу: http://localhost:${port}`);
+});
