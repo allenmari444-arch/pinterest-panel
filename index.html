@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinterest Panel</title>
+<style>
+    :root { --bg:#f3f4f6; --dark:#0f0f0f; --panel:#1a1a1a; --panel2:#242424; --border:#333; --text:#e5e5e5; --muted:#9a9a9a; --red:#dc2626; --redHover:#b91c1c; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: #111; margin: 0; }
+    .topbar { background: var(--dark); color: #fff; padding: 22px 30px; }
+    .topbar h1 { margin: 0; font-size: 22px; display:flex; align-items:center; gap:10px; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 25px; }
+
+    .card { background: var(--panel); color: var(--text); border-radius: 10px; padding: 22px; margin-bottom: 20px; }
+    label { display: block; margin: 10px 0 5px; font-size: 12px; color: var(--muted); }
+    input, textarea, select { width: 100%; padding: 10px; background: var(--panel2); border: 1px solid #444; color: #fff; border-radius: 5px; font-size: 13px; }
+    textarea { resize: vertical; min-height: 70px; }
+    .row { display:flex; gap:14px; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 220px; }
+
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    .tab-btn { padding: 10px 18px; background: var(--panel); color: #ddd; border: 1px solid #333; border-radius: 22px; cursor: pointer; font-size: 13px; font-weight: 600; }
+    .tab-btn:hover { background: #262626; }
+    .tab-btn.active { background: var(--red); border-color: var(--redHover); color: #fff; }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .btn { padding: 10px 18px; border-radius: 22px; border: 1px solid #b91c1c; background: var(--red); color:#fff; font-weight:700; cursor:pointer; font-size:13px; margin-top: 14px; margin-right: 8px; }
+    .btn:hover { background: var(--redHover); }
+    .btn.secondary { background: #333; border-color: #555; }
+    .btn.secondary:hover { background: #444; }
+    .btn.green { background: #16a34a; border-color: #15803d; }
+    .btn.green:hover { background: #15803d; }
+    .btn.disabled, .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .account-select-row { display:flex; align-items:center; gap:10px; margin-bottom: 16px; flex-wrap: wrap; }
+    .account-pill { padding: 6px 14px; border-radius: 16px; background: var(--panel2); border: 1px solid #444; font-size: 12px; cursor: pointer; }
+    .account-pill.active { background: var(--red); border-color: var(--redHover); color:#fff; }
+
+    #resultOutput, #bulkLog { background: #0a0a0a; color: #4ade80; padding: 14px; border-radius: 6px; font-family: monospace; font-size: 12.5px; min-height: 50px; white-space: pre-wrap; word-break: break-all; border: 1px solid #333; margin-top: 16px; max-height: 260px; overflow-y:auto; }
+
+    .boards-list { max-height: 180px; overflow-y: auto; margin-top: 10px; font-size: 12px; border: 1px solid #333; border-radius: 6px; }
+    .board-row { display:flex; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #2a2a2a; cursor:pointer; }
+    .board-row:hover { background: #262626; }
+
+    small.hint { color: var(--muted); display:block; margin-top: 8px; font-size: 12px; }
+    h2 { font-size: 17px; margin-top:0; color:#fff; }
+    table { width:100%; border-collapse: collapse; font-size:12px; }
+    th, td { text-align:left; padding: 5px 8px; border-bottom: 1px solid #2a2a2a; }
+    th { color: var(--muted); }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+
+<div class="topbar">
+    <h1>📌 Pinterest Panel — Панель управления</h1>
+</div>
+
+<div class="container">
+
+    <div class="tabs">
+        <div class="tab-btn active" data-tab="accounts" onclick="switchTab('accounts')">Аккаунты</div>
+        <div class="tab-btn" data-tab="add" onclick="switchTab('add')">Добавить</div>
+        <div class="tab-btn" data-tab="update" onclick="switchTab('update')">Обновить</div>
+        <div class="tab-btn" data-tab="delete" onclick="switchTab('delete')">Удалить</div>
+        <div class="tab-btn" data-tab="info" onclick="switchTab('info')">Информация</div>
+        <div class="tab-btn" data-tab="token" onclick="switchTab('token')">Токен</div>
+        <div class="tab-btn" data-tab="pin" onclick="switchTab('pin')">Тест публикации пина</div>
+        <div class="tab-btn" data-tab="bulk" onclick="switchTab('bulk')">Массовая публикация</div>
+    </div>
+
+    <div class="card" id="accountSelectorCard" style="display:none;">
+        <label>Активный аккаунт (для действий на других вкладках):</label>
+        <div class="account-select-row" id="accountPills"></div>
+    </div>
+
+    <div class="tab-content active" id="tab-accounts">
+        <div class="card">
+            <h2>Сохранённые аккаунты <span id="accCount" style="opacity:.6;">(0)</span></h2>
+            <div id="accountsList"></div>
+            <small class="hint">Куки хранятся только в этом браузере (localStorage), никуда кроме твоего Vercel не уходят.</small>
+        </div>
+        <div class="card">
+            <h2>Прокси по умолчанию</h2>
+            <input type="text" id="defaultProxy" placeholder="http://user:pass@host:port">
+            <button class="btn secondary" onclick="saveDefaultProxy()">Сохранить как стандарт</button>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-add">
+        <div class="card">
+            <h2>Добавить аккаунт</h2>
+            <label>Файл cookies.json (экспорт из Cookie-Editor):</label>
+            <input type="file" id="newCookiesFile" accept=".json,.txt">
+            <label style="margin-top:14px;">...или вставь строку/JSON вручную:</label>
+            <textarea id="newCookies" placeholder='csrftoken=...; _pinterest_sess=...  ИЛИ  [{"name":"csrftoken","value":"..."}, ...]'></textarea>
+            <label>Прокси (необязательно, свой для аккаунта):</label>
+            <input type="text" id="newProxy" placeholder="http://user:pass@host:port">
+            <button class="btn" onclick="addAccount()">Добавить и проверить</button>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-update">
+        <div class="card">
+            <h2>Обновить аккаунт</h2>
+            <small class="hint">Перепроверяет cookies выбранного аккаунта, обновляет username/токен/список досок.</small>
+            <button class="btn" onclick="runAction('update')">Обновить</button>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-delete">
+        <div class="card">
+            <h2>Удалить аккаунт</h2>
+            <small class="hint">Удаляет выбранный аккаунт из панели (только локально, из этого браузера).</small>
+            <button class="btn" onclick="deleteActive()">Удалить</button>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-info">
+        <div class="card">
+            <h2>Информация об аккаунте</h2>
+            <button class="btn" onclick="runAction('info')">Получить информацию</button>
+            <div id="boardsBox" style="display:none;">
+                <h2 style="margin-top:20px;">Доски аккаунта</h2>
+                <div id="boardsList" class="boards-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-token">
+        <div class="card">
+            <h2>Получить токен</h2>
+            <small class="hint">Возвращает csrftoken из cookies выбранного аккаунта.</small>
+            <button class="btn" onclick="runAction('token')">Получить токен</button>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-pin">
+        <div class="card">
+            <h2>Тест публикации пина</h2>
+            <div class="row">
+                <div>
+                    <label>Board ID</label>
+                    <input type="text" id="pinBoard" placeholder="выбери доску во вкладке Информация или вставь ID">
+                </div>
+                <div>
+                    <label>Image URL</label>
+                    <input type="text" id="pinImage" placeholder="https://...">
+                </div>
+            </div>
+            <label>Заголовок (до 100 симв.)</label>
+            <input type="text" id="pinTitle" maxlength="100">
+            <label>Описание (до 600 симв.)</label>
+            <textarea id="pinDescription" maxlength="600"></textarea>
+            <div class="row">
+                <div>
+                    <label>Ссылка (link)</label>
+                    <input type="text" id="pinLink" placeholder="https://...">
+                </div>
+                <div>
+                    <label>Alt text (до 300 симв.)</label>
+                    <input type="text" id="pinAlt" maxlength="300">
+                </div>
+            </div>
+            <button class="btn green" onclick="runAction('test')">Опубликовать тестово</button>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-bulk">
+        <div class="card">
+            <h2>📦 Массовая публикация из CSV</h2>
+            <small class="hint">Колонки CSV (первая строка — заголовки): <b>username,board,title,description,link,alt,image</b>. username должен совпадать с username одного из сохранённых аккаунтов.</small>
+            <label style="margin-top:14px;">Файл CSV:</label>
+            <input type="file" id="csvFile" accept=".csv">
+            <div class="row" style="align-items:flex-end;">
+                <div>
+                    <label>Пауза между пинами (сек)</label>
+                    <input type="number" id="bulkDelay" value="8" min="2">
+                </div>
+                <div>
+                    <button class="btn secondary" onclick="previewCsv()">Загрузить и показать превью</button>
+                    <button class="btn green" id="bulkStartBtn" onclick="startBulk()" disabled>Начать публикацию</button>
+                    <button class="btn" id="bulkStopBtn" onclick="stopBulk()" disabled>Остановить</button>
+                </div>
+            </div>
+            <div id="bulkPreview" style="margin-top:14px;"></div>
+            <div id="bulkProgress" style="margin-top:10px; font-size:12px; color:var(--muted);"></div>
+            <div id="bulkLog"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <label>Консоль / ответ сервера:</label>
+        <div id="resultOutput">Ожидание команды...</div>
+    </div>
+
+</div>
+
+<script>
+const STORAGE_KEY = 'pinterest_panel_accounts_v1';
+const PROXY_KEY = 'pinterest_panel_default_proxy';
+let accounts = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+let activeIndex = accounts.length ? 0 : -1;
+
+function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+    document.getElementById('accountSelectorCard').style.display = (name === 'add' || name === 'accounts') ? 'none' : 'block';
+}
+
+function saveAccounts() { localStorage.setItem(STORAGE_KEY, JSON.stringify(accounts)); }
+
+// Принимает и готовую строку "name=value; name2=value2", и JSON-экспорт из Cookie-Editor
+// (массив объектов вида [{"name":"csrftoken","value":"..."}, ...])
+// Устойчиво к BOM и другим невидимым символам, которые добавляет Блокнот при сохранении.
+function normalizeCookies(raw) {
+    raw = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
+    if (!raw) return raw;
+    try {
+        let parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            return parsed
+                .filter(c => c && c.name !== undefined && c.value !== undefined)
+                .map(c => `${c.name}=${c.value}`)
+                .join('; ');
+        }
+        if (parsed && Array.isArray(parsed.cookies)) {
+            return parsed.cookies
+                .filter(c => c && c.name !== undefined && c.value !== undefined)
+                .map(c => `${c.name}=${c.value}`)
+                .join('; ');
+        }
+    } catch (e) {
+        // не JSON — значит уже готовая строка cookie, отдаём как есть
+    }
+    return raw;
+}
+
+function renderAccounts() {
+    document.getElementById('accCount').innerText = '(' + accounts.length + ')';
+
+    const list = document.getElementById('accountsList');
+    list.innerHTML = accounts.length ? '' : '<small class="hint">Пока нет аккаунтов — добавь через вкладку "Добавить".</small>';
+    accounts.forEach((acc, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px; border:1px solid #333; border-radius:6px; margin-bottom:8px; background:#242424;';
+        row.innerHTML = `<div><b>@${acc.username || 'без имени'}</b><br><small style="color:#9a9a9a;">${acc.token ? 'токен: ' + acc.token.slice(0,14) + '…' : 'не проверен'} · ${(acc.boards||[]).length} досок</small></div>`;
+        list.appendChild(row);
+    });
+
+    const pills = document.getElementById('accountPills');
+    pills.innerHTML = '';
+    accounts.forEach((acc, i) => {
+        const pill = document.createElement('div');
+        pill.className = 'account-pill' + (i === activeIndex ? ' active' : '');
+        pill.innerText = '@' + (acc.username || '???');
+        pill.onclick = () => { activeIndex = i; renderAccounts(); };
+        pills.appendChild(pill);
+    });
+    if (!accounts.length) pills.innerHTML = '<small class="hint">Нет добавленных аккаунтов.</small>';
+}
+
+function saveDefaultProxy() {
+    localStorage.setItem(PROXY_KEY, document.getElementById('defaultProxy').value);
+    alert('Прокси по умолчанию сохранён');
+}
+
+function setResult(msg, ok) {
+    const out = document.getElementById('resultOutput');
+    out.style.color = ok ? '#4ade80' : '#f87171';
+    out.innerText = msg;
+}
+
+async function readCookiesInput() {
+    const fileInput = document.getElementById('newCookiesFile');
+    if (fileInput.files && fileInput.files[0]) {
+        const text = await fileInput.files[0].text();
+        return normalizeCookies(text);
+    }
+    return normalizeCookies(document.getElementById('newCookies').value);
+}
+
+async function addAccount() {
+    const cookies = await readCookiesInput();
+    const proxy = document.getElementById('newProxy').value.trim() || localStorage.getItem(PROXY_KEY) || '';
+    if (!cookies) { alert('Загрузи файл cookies.json или вставь строку/JSON вручную'); return; }
+    document.getElementById('resultOutput').style.color = '#eab308';
+    document.getElementById('resultOutput').innerText = 'Проверка аккаунта...';
+
+    try {
+        const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'add', cookies, proxy }) });
+        const data = await res.json();
+        if (data.success) {
+            accounts.push({ username: data.username, cookies, proxy, token: data.token, boards: data.boards || [] });
+            saveAccounts();
+            activeIndex = accounts.length - 1;
+            renderAccounts();
+            document.getElementById('newCookies').value = '';
+            document.getElementById('newCookiesFile').value = '';
+            setResult(data.message, true);
+            renderBoards(data.boards || []);
+            switchTab('accounts');
+        } else {
+            setResult('Ошибка: ' + data.error, false);
+        }
+    } catch (e) { setResult('Сетевая ошибка: ' + e.message, false); }
+}
+
+function deleteActive() {
+    if (activeIndex < 0) { alert('Выбери аккаунт вверху страницы'); return; }
+    if (!confirm('Удалить аккаунт @' + accounts[activeIndex].username + ' из панели?')) return;
+    const name = accounts[activeIndex].username;
+    accounts.splice(activeIndex, 1);
+    activeIndex = accounts.length ? 0 : -1;
+    saveAccounts();
+    renderAccounts();
+    document.getElementById('boardsBox').style.display = 'none';
+    setResult(`Аккаунт @${name} удалён из панели.`, true);
+}
+
+function renderBoards(boards) {
+    const box = document.getElementById('boardsBox');
+    const list = document.getElementById('boardsList');
+    if (!boards || !boards.length) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    list.innerHTML = '';
+    boards.forEach(b => {
+        const row = document.createElement('div');
+        row.className = 'board-row';
+        row.innerHTML = `<span>${b.name}</span><span style="color:#9a9a9a;">${b.pin_count ?? ''} пинов · ${b.id}</span>`;
+        row.onclick = () => { document.getElementById('pinBoard').value = b.id; switchTab('pin'); };
+        list.appendChild(row);
+    });
+}
+
+async function runAction(actionType) {
+    if (activeIndex < 0 && actionType !== 'test') { alert('Сначала выбери аккаунт (вкладка Аккаунты)'); return; }
+    document.getElementById('resultOutput').style.color = '#eab308';
+    document.getElementById('resultOutput').innerText = 'Выполнение запроса...';
+
+    const acc = activeIndex >= 0 ? accounts[activeIndex] : null;
+    const payload = {
+        action: actionType,
+        cookies: acc ? acc.cookies : '',
+        proxy: acc ? acc.proxy : (localStorage.getItem(PROXY_KEY) || ''),
+        username: acc ? acc.username : '',
+        board: document.getElementById('pinBoard').value,
+        title: document.getElementById('pinTitle').value,
+        description: document.getElementById('pinDescription').value,
+        link: document.getElementById('pinLink').value,
+        alt: document.getElementById('pinAlt').value,
+        image: document.getElementById('pinImage').value
+    };
+
+    try {
+        const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const data = await res.json();
+        if (data.success) {
+            setResult(data.message, true);
+            if (data.token && acc) { acc.token = data.token; saveAccounts(); renderAccounts(); }
+            if (data.boards) { acc.boards = data.boards; saveAccounts(); renderBoards(data.boards); }
+        } else {
+            setResult('Ошибка: ' + data.error, false);
+        }
+    } catch (e) { setResult('Сетевая ошибка: ' + e.message, false); }
+}
+
+let bulkRows = [];
+let bulkStopFlag = false;
+let bulkRunning = false;
+
+function previewCsv() {
+    const file = document.getElementById('csvFile').files[0];
+    if (!file) { alert('Выбери CSV файл'); return; }
+    Papa.parse(file, {
+        header: true, skipEmptyLines: true,
+        complete: function(results) {
+            bulkRows = results.data.map(r => ({
+                username: (r.username||'').trim(), board: (r.board||'').trim(), title: (r.title||'').trim(),
+                description: (r.description||'').trim(), link: (r.link||'').trim(), alt: (r.alt||'').trim(),
+                image: (r.image||'').trim(), status: 'ожидание'
+            }));
+            renderBulkPreview();
+            document.getElementById('bulkStartBtn').disabled = bulkRows.length === 0;
+        },
+        error: function(err) { alert('Ошибка чтения CSV: ' + err.message); }
+    });
+}
+
+function renderBulkPreview() {
+    const box = document.getElementById('bulkPreview');
+    if (!bulkRows.length) { box.innerHTML = ''; return; }
+    const knownUsers = new Set(accounts.map(a => a.username));
+    let html = '<table><tr><th>#</th><th>username</th><th>board</th><th>title</th><th>image</th><th>статус</th></tr>';
+    bulkRows.forEach((r, i) => {
+        const matched = knownUsers.has(r.username);
+        const warn = matched ? '' : ' style="color:#f87171;"';
+        html += `<tr${warn}><td>${i+1}</td><td>${r.username}${matched?'':' ⚠'}</td><td>${r.board}</td><td>${(r.title||'').slice(0,30)}</td><td>${(r.image||'').slice(0,22)}…</td><td id="rowstatus-${i}">${r.status}</td></tr>`;
+    });
+    html += '</table>';
+    box.innerHTML = html;
+    document.getElementById('bulkProgress').innerText = `Строк: ${bulkRows.length}. С известным аккаунтом: ${bulkRows.filter(r=>knownUsers.has(r.username)).length}.`;
+}
+
+function logBulk(text, color) {
+    const log = document.getElementById('bulkLog');
+    const line = document.createElement('div');
+    if (color) line.style.color = color;
+    line.textContent = text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+}
+
+function stopBulk() { bulkStopFlag = true; logBulk('⏹ Остановка после текущего запроса...', '#eab308'); }
+
+async function startBulk() {
+    if (bulkRunning || !bulkRows.length) return;
+    bulkRunning = true; bulkStopFlag = false;
+    document.getElementById('bulkStartBtn').disabled = true;
+    document.getElementById('bulkStopBtn').disabled = false;
+    document.getElementById('bulkLog').innerHTML = '';
+
+    const delaySec = Math.max(2, parseInt(document.getElementById('bulkDelay').value) || 8);
+    let okCount=0, failCount=0, skipCount=0;
+
+    for (let i=0; i<bulkRows.length; i++) {
+        if (bulkStopFlag) { logBulk('Остановлено пользователем.', '#eab308'); break; }
+        const row = bulkRows[i];
+        const acc = accounts.find(a => a.username === row.username);
+        const statusCell = document.getElementById(`rowstatus-${i}`);
+
+        if (!acc) { skipCount++; if(statusCell) statusCell.innerText='пропущено'; logBulk(`[${i+1}/${bulkRows.length}] ⚠ @${row.username} не найден.`, '#f87171'); continue; }
+        if (!row.board || !row.title || !row.image) { skipCount++; if(statusCell) statusCell.innerText='пропущено'; logBulk(`[${i+1}/${bulkRows.length}] ⚠ не хватает полей.`, '#f87171'); continue; }
+
+        if (statusCell) statusCell.innerText = 'публикация...';
+        try {
+            const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'pin', cookies: acc.cookies, proxy: acc.proxy, board: row.board, title: row.title, description: row.description, link: row.link, alt: row.alt, image: row.image }) });
+            const data = await res.json();
+            if (data.success) { okCount++; if(statusCell) statusCell.innerText='✅'; logBulk(`[${i+1}/${bulkRows.length}] ✅ @${row.username}: ${data.message}`, '#4ade80'); }
+            else { failCount++; if(statusCell) statusCell.innerText='❌'; logBulk(`[${i+1}/${bulkRows.length}] ❌ @${row.username}: ${data.error}`, '#f87171'); }
+        } catch (e) { failCount++; if(statusCell) statusCell.innerText='❌'; logBulk(`[${i+1}/${bulkRows.length}] ❌ сеть: ${e.message}`, '#f87171'); }
+
+        document.getElementById('bulkProgress').innerText = `Готово: ${okCount} успешно, ${failCount} ошибок, ${skipCount} пропущено из ${bulkRows.length}.`;
+        if (i < bulkRows.length-1 && !bulkStopFlag) await new Promise(r => setTimeout(r, delaySec*1000));
+    }
+
+    bulkRunning = false;
+    document.getElementById('bulkStartBtn').disabled = false;
+    document.getElementById('bulkStopBtn').disabled = true;
+    logBulk(`Готово. Успешно: ${okCount}, ошибок: ${failCount}, пропущено: ${skipCount}.`, '#60a5fa');
+}
+
+document.getElementById('defaultProxy').value = localStorage.getItem(PROXY_KEY) || '';
+renderAccounts();
+if (activeIndex >= 0 && accounts[activeIndex].boards) renderBoards(accounts[activeIndex].boards);
+</script>
+</body>
+</html>
