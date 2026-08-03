@@ -317,7 +317,8 @@ app.post('/api/pinterest', async (req, res) => {
 });
 
 // === ЗАПУСКАЕМ СЕРВЕР ===
-const port = process.env.PORT || 3000;
+// ИСПРАВЛЕНО: порт 8080 вместо 3000
+const port = process.env.PORT || 8080;
 app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Pinterest Panel API запущен на порту ${port}`);
     console.log(`📡 Доступен по адресу: http://localhost:${port}`);
