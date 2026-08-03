@@ -87,7 +87,8 @@ export default async function handler(req, res) {
     let page = null;
 
     try {
-        const executablePath = await chromium.executablePath('chrome');
+        // ИСПРАВЛЕНО: убрал ('chrome')
+        const executablePath = await chromium.executablePath();
         
         browser = await puppeteer.launch({
             args: [
