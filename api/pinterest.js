@@ -1,6 +1,6 @@
 // api/pinterest.js
-import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
+import puppeteer from 'puppeteer-core';
 
 export const config = {
     maxDuration: 60
@@ -87,12 +87,10 @@ export default async function handler(req, res) {
     let page = null;
 
     try {
-        // Используем Puppeteer вместо Playwright
-        const executablePath = await chromium.executablePath();
+        const executablePath = await chromium.executablePath('chrome');
         
         browser = await puppeteer.launch({
             args: [
-                ...chromium.args,
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
@@ -108,7 +106,6 @@ export default async function handler(req, res) {
         const context = await browser.createIncognitoBrowserContext();
         page = await context.newPage();
 
-        // Устанавливаем куки
         await page.setCookie(...cookieObjects);
 
         await page.goto('https://www.pinterest.com/', { 
