@@ -6,6 +6,11 @@ import express from 'express';
 const app = express();
 app.use(express.json());
 
+// === ГЛАВНАЯ СТРАНИЦА ===
+app.get('/', (req, res) => {
+    res.send('✅ Pinterest Panel API работает! Используйте POST запросы к /api/pinterest');
+});
+
 const config = {
     maxDuration: 60
 };
