@@ -2,6 +2,9 @@
   "name": "pinterest-panel",
   "version": "2.0.4",
   "private": true,
+  "scripts": {
+    "start": "node api/pinterest.js"
+  },
   "dependencies": {
     "puppeteer-core": "^21.0.0",
     "@sparticuz/chromium": "^131.0.1"
