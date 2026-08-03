@@ -3,7 +3,7 @@
   "version": "2.0.3",
   "private": true,
   "dependencies": {
-    "playwright-core": "^1.47.0",
+    "puppeteer-core": "^21.0.0",
     "@sparticuz/chromium": "^131.0.1"
   }
 }
