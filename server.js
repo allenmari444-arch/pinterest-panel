@@ -31,25 +31,36 @@ function parseCookiesInput(raw) {
         const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.cookies) ? parsed.cookies : null);
         if (arr) {
             return arr.filter(c => c && c.name !== undefined && c.value !== undefined).map(c => {
+                const name = String(c.name).trim();
+                const value = String(c.value).trim();
+                if (!name) return null;
+
+                // Базовый набор полей, который гарантированно не вызовет ошибок в Puppeteer
                 const cookieObj = {
-                    name: String(c.name),
-                    value: String(c.value),
+                    name: name,
+                    value: value,
                     domain: c.domain || '.pinterest.com',
-                    path: c.path || '/',
-                    httpOnly: !!c.httpOnly,
-                    secure: c.secure !== undefined ? !!c.secure : true,
+                    path: c.path || '/'
                 };
-                if (c.sameSite) {
-                    const ss = String(c.sameSite).toLowerCase();
+
+                if (c.secure === true) cookieObj.secure = true;
+                if (c.httpOnly === true) cookieObj.httpOnly = true;
+                if (typeof c.expirationDate === 'number') cookieObj.expires = c.expirationDate;
+
+                // Обрабатываем sameSite, отбрасывая null и неверные значения
+                if (c.sameSite && typeof c.sameSite === 'string') {
+                    const ss = c.sameSite.toLowerCase();
                     if (ss === 'strict') cookieObj.sameSite = 'Strict';
                     else if (ss === 'lax') cookieObj.sameSite = 'Lax';
                     else if (ss === 'none' || ss === 'no_restriction') cookieObj.sameSite = 'None';
                 }
+
                 return cookieObj;
-            });
+            }).filter(Boolean);
         }
     } catch (e) {}
 
+    // Если это обычная строка через точку с запятой
     return cleaned.split(';').map(part => part.trim()).filter(Boolean).map(pair => {
         const idx = pair.indexOf('=');
         if (idx === -1) return null;
@@ -65,7 +76,7 @@ function parseCookiesInput(raw) {
 app.post('/api/pinterest', async (req, res) => {
     const { action, proxy, cookies, board, title, description, link, alt, image } = req.body;
     const cookieObjects = parseCookiesInput(cookies);
-    if (!cookieObjects.length) return res.status(400).json({ success: false, error: '❌ Куки пустые.' });
+    if (!cookieObjects.length) return res.status(400).json({ success: false, error: '❌ Куки пустые или не распознаны.' });
 
     let browser = null;
     try {
@@ -74,7 +85,10 @@ app.post('/api/pinterest', async (req, res) => {
             headless: 'new',
         });
         const page = await (await browser.createIncognitoBrowserContext()).newPage();
+        
+        // Устанавливаем куки массивом, отфильтровав всё лишнее
         await page.setCookie(...cookieObjects);
+
         await page.goto('https://www.pinterest.com/', { waitUntil: 'networkidle2', timeout: 60000 });
         
         const csrftoken = await page.evaluate(() => {
@@ -84,7 +98,7 @@ app.post('/api/pinterest', async (req, res) => {
 
         if (!csrftoken) {
             await browser.close();
-            return res.status(400).json({ success: false, error: '❌ Сессия не активна (нет куки авторизации).' });
+            return res.status(400).json({ success: false, error: '❌ Сессия не активна (нет куки авторизации или они устарели).' });
         }
 
         if (['add', 'update', 'info', 'token'].includes(action)) {
