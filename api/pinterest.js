@@ -1,15 +1,16 @@
-// api/pinterest.js
-import chromium from '@sparticuz/chromium';
-import puppeteer from 'puppeteer-core';
+import puppeteer from 'puppeteer';
 import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
 
-// === ГЛАВНАЯ СТРАНИЦА ===
-app.get('/', (req, res) => {
-    res.send('✅ Pinterest Panel API работает!');
-});
+// Раздаем статические файлы (панель управления) из корневой папки
+app.use(express.static(path.join(__dirname, '..')));
 
 // === GET ЗАПРОСЫ К /api/pinterest ===
 app.get('/api/pinterest', (req, res) => {
@@ -24,10 +25,6 @@ app.get('/api/pinterest', (req, res) => {
         }
     });
 });
-
-const config = {
-    maxDuration: 60
-};
 
 function parseCookiesInput(raw) {
     const cleaned = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
@@ -106,24 +103,34 @@ app.post('/api/pinterest', async (req, res) => {
     let page = null;
 
     try {
-        const executablePath = await chromium.executablePath();
-        
+        const launchArgs = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--window-size=1920,1080',
+            '--disable-blink-features=AutomationControlled',
+        ];
+
+        if (proxyConfig && proxyConfig.server) {
+            launchArgs.push(`--proxy-server=${proxyConfig.server}`);
+        }
+
         browser = await puppeteer.launch({
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--window-size=1920,1080',
-                '--disable-blink-features=AutomationControlled',
-            ],
-            executablePath: executablePath,
-            headless: true,
+            args: launchArgs,
+            headless: 'new',
         });
 
         const context = await browser.createIncognitoBrowserContext();
         page = await context.newPage();
+
+        if (proxyConfig && proxyConfig.username && proxyConfig.password) {
+            await page.authenticate({
+                username: proxyConfig.username,
+                password: proxyConfig.password
+            });
+        }
 
         await page.setCookie(...cookieObjects);
 
@@ -132,7 +139,7 @@ app.post('/api/pinterest', async (req, res) => {
             timeout: 60000 
         });
 
-        await page.waitForTimeout(2000);
+        await new Promise(r => setTimeout(r, 2000));
 
         const loginCheck = await page.evaluate(() => {
             const hasCsrf = document.cookie.includes('csrftoken');
@@ -141,11 +148,11 @@ app.post('/api/pinterest', async (req, res) => {
             return { hasCsrf, hasProfile, hasAvatar };
         });
 
-        if (!loginCheck.hasCsrf || !(loginCheck.hasProfile || loginCheck.hasAvatar)) {
+        if (!loginCheck.hasCsrf) {
             await browser.close();
             return res.status(400).json({ 
                 success: false, 
-                error: '❌ Сессия не активна. Выйдите и заново войдите в Pinterest.' 
+                error: '❌ Сессия не активна (нет csrftoken). Войдите заново в Pinterest.' 
             });
         }
 
@@ -330,14 +337,8 @@ app.post('/api/pinterest', async (req, res) => {
     }
 });
 
-// === ОБРАБОТЧИК ДЛЯ ГЛАВНОЙ СТРАНИЦЫ ===
-app.get('/', (req, res) => {
-    res.send('✅ Pinterest Panel API работает!');
-});
-
-// === ЗАПУСКАЕМ СЕРВЕР ===
+// Запускаем сервер на порту Railway
 const port = process.env.PORT || 8080;
 app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 Pinterest Panel API запущен на порту ${port}`);
-    console.log(`📡 Доступен по адресу: http://localhost:${port}`);
+    console.log(`🚀 Pinterest Panel запущен на порту ${port}`);
 });
