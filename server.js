@@ -168,7 +168,10 @@ app.post('/api/pinterest', async (req, res) => {
             headless: 'new',
         });
 
-        const page = await (await browser.createIncognitoBrowserContext()).newPage();
+        const browserContext = typeof browser.createBrowserContext === 'function'
+            ? await browser.createBrowserContext()
+            : await browser.createIncognitoBrowserContext();
+        const page = await browserContext.newPage();
 
         // Если у прокси есть логин/пароль — авторизуемся
         if (proxyAuth) {
