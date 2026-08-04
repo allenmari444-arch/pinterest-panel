@@ -254,14 +254,31 @@ app.post('/api/pinterest', async (req, res) => {
 
         await page.goto('https://www.pinterest.com/', { waitUntil: 'networkidle2', timeout: 60000 });
 
-        const csrftoken = await page.evaluate(() => {
-            const match = document.cookie.match(/csrftoken=([^;]+)/);
-            return match ? match[1] : '';
+        const authCheck = await page.evaluate(() => {
+            const csrfMatch = document.cookie.match(/csrftoken=([^;]+)/);
+            const authMatch = document.cookie.match(/_auth=([^;]+)/);
+            return {
+                csrftoken: csrfMatch ? csrfMatch[1] : '',
+                authValue: authMatch ? authMatch[1] : '',
+                allCookieNames: document.cookie.split(';').map(c => c.trim().split('=')[0])
+            };
         });
+
+        const csrftoken = authCheck.csrftoken;
 
         if (!csrftoken) {
             await browser.close();
             return res.status(400).json({ success: false, error: '❌ Сессия не активна (нет куки авторизации или они устарели).' });
+        }
+
+        if (authCheck.authValue !== '1') {
+            await browser.close();
+            return res.status(400).json({
+                success: false,
+                error: '❌ Куки устарели или невалидны: сессия анонимная (нет _auth=1). Экспортируйте куки заново, находясь залогиненной в аккаунт Pinterest в браузере.',
+                debugOutboundIp: outboundIp,
+                debugCookieNamesFound: authCheck.allCookieNames
+            });
         }
 
         if (['add', 'update', 'info', 'token'].includes(action)) {
