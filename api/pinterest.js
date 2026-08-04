@@ -337,6 +337,11 @@ app.post('/api/pinterest', async (req, res) => {
     }
 });
 
+// Корень для проверки Railway
+app.get('/', (req, res) => {
+    res.send('Pinterest Panel is running!');
+});
+
 // Запускаем сервер на порту Railway
 const port = process.env.PORT || 8080;
 app.listen(port, '0.0.0.0', () => {
