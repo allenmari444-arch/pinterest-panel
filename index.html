@@ -274,6 +274,26 @@ function setResult(msg, ok) {
     out.innerText = msg;
 }
 
+// Показывает в консоли ПОЛНЫЙ ответ сервера: сообщение + username + токен + доски,
+// а не только текстовое message, как раньше.
+function setFullResult(data, ok) {
+    const out = document.getElementById('resultOutput');
+    out.style.color = ok ? '#4ade80' : '#f87171';
+    if (!ok) {
+        let text = 'Ошибка: ' + (data.error || 'неизвестная ошибка');
+        if (data.debugOutboundIp) text += `\nIP запроса: ${data.debugOutboundIp}`;
+        if (data.debugCookieNamesFound) text += `\nНайденные куки: ${data.debugCookieNamesFound.join(', ')}`;
+        out.innerText = text;
+        return;
+    }
+    let text = data.message || 'Готово.';
+    if (data.username) text += `\nАккаунт: @${data.username}`;
+    if (data.token || data.csrftoken) text += `\nТокен (csrftoken): ${data.token || data.csrftoken}`;
+    if (Array.isArray(data.boards)) text += `\nДосок найдено: ${data.boards.length}`;
+    if (data.note) text += `\n⚠ ${data.note}`;
+    out.innerText = text;
+}
+
 async function readCookiesInput() {
     const fileInput = document.getElementById('newCookiesFile');
     if (fileInput.files && fileInput.files[0]) {
@@ -294,17 +314,17 @@ async function addAccount() {
         const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'add', cookies, proxy }) });
         const data = await res.json();
         if (data.success) {
-            accounts.push({ username: data.username, cookies, proxy, token: data.token, boards: data.boards || [] });
+            accounts.push({ username: data.username, cookies, proxy, token: data.token || data.csrftoken, boards: data.boards || [] });
             saveAccounts();
             activeIndex = accounts.length - 1;
             renderAccounts();
             document.getElementById('newCookies').value = '';
             document.getElementById('newCookiesFile').value = '';
-            setResult(data.message, true);
+            setFullResult(data, true);
             renderBoards(data.boards || []);
             switchTab('accounts');
         } else {
-            setResult('Ошибка: ' + data.error, false);
+            setFullResult(data, false);
         }
     } catch (e) { setResult('Сетевая ошибка: ' + e.message, false); }
 }
@@ -359,11 +379,11 @@ async function runAction(actionType) {
         const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         const data = await res.json();
         if (data.success) {
-            setResult(data.message, true);
-            if (data.token && acc) { acc.token = data.token; saveAccounts(); renderAccounts(); }
+            setFullResult(data, true);
+            if ((data.token || data.csrftoken) && acc) { acc.token = data.token || data.csrftoken; saveAccounts(); renderAccounts(); }
             if (data.boards) { acc.boards = data.boards; saveAccounts(); renderBoards(data.boards); }
         } else {
-            setResult('Ошибка: ' + data.error, false);
+            setFullResult(data, false);
         }
     } catch (e) { setResult('Сетевая ошибка: ' + e.message, false); }
 }
