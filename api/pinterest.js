@@ -8,7 +8,21 @@ app.use(express.json());
 
 // === ГЛАВНАЯ СТРАНИЦА ===
 app.get('/', (req, res) => {
-    res.send('✅ Pinterest Panel API работает! Используйте POST запросы к /api/pinterest');
+    res.send('✅ Pinterest Panel API работает!');
+});
+
+// === GET ЗАПРОСЫ К /api/pinterest ===
+app.get('/api/pinterest', (req, res) => {
+    res.json({
+        message: '✅ Pinterest Panel API готов к работе!',
+        endpoints: {
+            add: 'POST /api/pinterest { action: "add", cookies: "..." }',
+            info: 'POST /api/pinterest { action: "info", cookies: "..." }',
+            token: 'POST /api/pinterest { action: "token", cookies: "..." }',
+            pin: 'POST /api/pinterest { action: "pin", board: "...", title: "...", image: "..." }',
+            test: 'POST /api/pinterest { action: "test", board: "...", title: "...", image: "..." }'
+        }
+    });
 });
 
 const config = {
