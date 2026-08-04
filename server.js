@@ -27,7 +27,6 @@ function parseCookiesInput(raw) {
     const cleaned = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
     if (!cleaned) return [];
 
-    // Приводим одну куку к формату, который гарантированно примет Puppeteer/CDP
     const sanitize = (c) => {
         if (!c || c.name === undefined) return null;
 
@@ -62,13 +61,11 @@ function parseCookiesInput(raw) {
                 cookieObj.sameSite = 'None';
                 cookieObj.secure = true; // обязательно для SameSite=None
             }
-            // любые другие/некорректные значения (например null, "unspecified") — просто не ставим sameSite
         }
 
         return cookieObj;
     };
 
-    // Попытка распарсить как JSON (массив кук или объект { cookies: [...] })
     try {
         const parsed = JSON.parse(cleaned);
         const arr = Array.isArray(parsed)
@@ -152,13 +149,31 @@ app.post('/api/pinterest', async (req, res) => {
 
         if (['add', 'update', 'info', 'token'].includes(action)) {
             const userInfo = await page.evaluate(async (token) => {
-                const res = await fetch('https://www.pinterest.com/resource/UserResource/get/?source_url=/&data={"options":{"field_set_key":"profile"},"context":{}}', {
+                const resp = await fetch('https://www.pinterest.com/resource/UserResource/get/?source_url=/&data={"options":{"field_set_key":"profile"},"context":{}}', {
                     headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': token }
                 });
-                return await res.json();
+
+                const rawText = await resp.text();
+                let parsed = null;
+                try {
+                    parsed = JSON.parse(rawText);
+                } catch (e) {
+                    // Pinterest вернул не JSON (например, "Invalid Request" или HTML-страницу ошибки)
+                    return { ok: false, status: resp.status, rawText: rawText.slice(0, 300) };
+                }
+
+                return { ok: resp.ok, status: resp.status, data: parsed };
             }, csrftoken);
 
-            const user = userInfo?.resource_response?.data || {};
+            if (!userInfo.ok || !userInfo.data) {
+                await browser.close();
+                return res.status(400).json({
+                    success: false,
+                    error: `❌ Pinterest вернул некорректный ответ (статус ${userInfo.status}): ${userInfo.rawText || 'нет тела ответа'}`
+                });
+            }
+
+            const user = userInfo.data?.resource_response?.data || {};
             await browser.close();
             return res.json({ success: true, message: `✅ Аккаунт подключен!`, username: user.username || 'user' });
         }
