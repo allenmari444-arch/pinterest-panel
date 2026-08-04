@@ -25,25 +25,40 @@ app.get('/api/pinterest', (req, res) => {
 function parseCookiesInput(raw) {
     const cleaned = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
     if (!cleaned) return [];
+    
     try {
         const parsed = JSON.parse(cleaned);
         const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.cookies) ? parsed.cookies : null);
         if (arr) {
-            return arr.filter(c => c && c.name !== undefined && c.value !== undefined).map(c => ({
-                name: c.name,
-                value: String(c.value),
-                domain: c.domain || '.pinterest.com',
-                path: c.path || '/',
-                httpOnly: !!c.httpOnly,
-                secure: c.secure !== undefined ? !!c.secure : true,
-                sameSite: c.sameSite === 'no_restriction' ? 'None' : (c.sameSite || 'Lax')
-            }));
+            return arr.filter(c => c && c.name !== undefined && c.value !== undefined).map(c => {
+                const cookieObj = {
+                    name: String(c.name),
+                    value: String(c.value),
+                    domain: c.domain || '.pinterest.com',
+                    path: c.path || '/',
+                    httpOnly: !!c.httpOnly,
+                    secure: c.secure !== undefined ? !!c.secure : true,
+                };
+                if (c.sameSite) {
+                    const ss = String(c.sameSite).toLowerCase();
+                    if (ss === 'strict') cookieObj.sameSite = 'Strict';
+                    else if (ss === 'lax') cookieObj.sameSite = 'Lax';
+                    else if (ss === 'none' || ss === 'no_restriction') cookieObj.sameSite = 'None';
+                }
+                return cookieObj;
+            });
         }
     } catch (e) {}
+
     return cleaned.split(';').map(part => part.trim()).filter(Boolean).map(pair => {
         const idx = pair.indexOf('=');
         if (idx === -1) return null;
-        return { name: pair.slice(0, idx).trim(), value: pair.slice(idx + 1).trim(), domain: '.pinterest.com', path: '/' };
+        return { 
+            name: pair.slice(0, idx).trim(), 
+            value: pair.slice(idx + 1).trim(), 
+            domain: '.pinterest.com', 
+            path: '/' 
+        };
     }).filter(Boolean);
 }
 
