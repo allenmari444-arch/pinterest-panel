@@ -314,26 +314,12 @@ app.post('/api/pinterest', async (req, res) => {
             // отдельным антибот-фильтром). Вместо этого достаём имя пользователя
             // прямо из уже загруженной и подтверждённо залогиненной страницы.
             const domUserInfo = await page.evaluate(() => {
-                // Способ 1: встроенное состояние приложения (если Pinterest его отдаёт)
-                try {
-                    const scripts = Array.from(document.querySelectorAll('script'));
-                    for (const s of scripts) {
-                        const text = s.textContent || '';
-                        if (text.includes('"username"') && (text.includes('__PWS_DATA__') || text.includes('__INITIAL_STATE__'))) {
-                            const match = text.match(/=\s*(\{[\s\S]*\})\s*;?\s*$/);
-                            if (match) {
-                                try {
-                                    const data = JSON.parse(match[1]);
-                                    const json = JSON.stringify(data);
-                                    const unameMatch = json.match(/"username"\s*:\s*"([^"]+)"/);
-                                    if (unameMatch) return unameMatch[1];
-                                } catch (e) {}
-                            }
-                        }
-                    }
-                } catch (e) {}
+                // Ищем встроенные данные состояния приложения по всей странице
+                const html = document.documentElement.innerHTML;
+                const unameMatch = html.match(/"username"\s*:\s*"([^"]+)"/);
+                if (unameMatch) return unameMatch[1];
 
-                // Способ 2: ссылка на профиль в шапке сайта
+                // Запасной способ: ссылка на профиль в шапке сайта
                 const profileLink = document.querySelector('a[href^="/"][data-test-id*="avatar" i]')
                     || document.querySelector('a[aria-label*="profile" i]')
                     || document.querySelector('a[data-test-id="header-profile"]');
@@ -346,11 +332,48 @@ app.post('/api/pinterest', async (req, res) => {
                 return null;
             });
 
+            const username = domUserInfo || null;
+            let boards = [];
+
+            // Достаём список досок для add/update/info (везде, где панель их ждёт) —
+            // через РЕАЛЬНУЮ навигацию на страницу досок (не через JS fetch к API),
+            // так как обычная навигация у нас уже подтверждённо не блокируется.
+            if (['add', 'update', 'info'].includes(action) && username) {
+                try {
+                    await page.goto(`https://www.pinterest.com/${username}/boards/`, { waitUntil: 'networkidle2', timeout: 30000 });
+                    boards = await page.evaluate(() => {
+                        const results = [];
+                        const seen = new Set();
+                        const links = Array.from(document.querySelectorAll('a[href]'));
+                        for (const a of links) {
+                            const href = a.getAttribute('href') || '';
+                            const parts = href.split('/').filter(Boolean);
+                            if (parts.length === 2) {
+                                const slug = parts[1];
+                                if (!seen.has(slug) && !['boards', 'pins', 'following', 'followers', '_saved', 'boards_feed'].includes(slug)) {
+                                    seen.add(slug);
+                                    const name = (a.textContent || '').trim() || slug;
+                                    results.push({ id: slug, name, pin_count: null, url: `https://www.pinterest.com${href}` });
+                                }
+                            }
+                        }
+                        return results.slice(0, 100);
+                    });
+                } catch (e) {
+                    console.warn('⚠️ Не удалось получить список досок:', e.message);
+                }
+            }
+
             await browser.close();
             return res.json({
                 success: true,
                 message: `✅ Аккаунт подключен!`,
-                username: domUserInfo || 'user'
+                username: username || 'user',
+                token: csrftoken,
+                csrftoken,
+                boards,
+                debugOutboundIp: outboundIp,
+                note: username ? undefined : 'Не удалось автоматически определить username со страницы — список досок недоступен без него.'
             });
         }
 
