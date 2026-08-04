@@ -1,5 +1,8 @@
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import express from 'express';
+
+puppeteer.use(StealthPlugin());
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -27,6 +30,7 @@ function parseCookiesInput(raw) {
     const cleaned = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
     if (!cleaned) return [];
 
+    // Приводим одну куку к формату, который гарантированно примет Puppeteer/CDP
     const sanitize = (c) => {
         if (!c || c.name === undefined) return null;
 
@@ -44,10 +48,13 @@ function parseCookiesInput(raw) {
         if (c.secure === true) cookieObj.secure = true;
         if (c.httpOnly === true) cookieObj.httpOnly = true;
 
+        // expires должен быть положительным Unix timestamp (в секундах).
+        // Отрицательные значения (-1) или отсутствие поля = сессионная кука.
         if (typeof c.expirationDate === 'number' && isFinite(c.expirationDate) && c.expirationDate > 0) {
             cookieObj.expires = Math.floor(c.expirationDate);
         }
 
+        // sameSite: Chrome требует secure=true, если sameSite = None
         if (c.sameSite && typeof c.sameSite === 'string') {
             const ss = c.sameSite.toLowerCase();
             if (ss === 'strict') {
@@ -56,13 +63,15 @@ function parseCookiesInput(raw) {
                 cookieObj.sameSite = 'Lax';
             } else if (ss === 'none' || ss === 'no_restriction') {
                 cookieObj.sameSite = 'None';
-                cookieObj.secure = true;
+                cookieObj.secure = true; // обязательно для SameSite=None
             }
+            // любые другие/некорректные значения (например null, "unspecified") — просто не ставим sameSite
         }
 
         return cookieObj;
     };
 
+    // Попытка распарсить как JSON (массив кук или объект { cookies: [...] })
     try {
         const parsed = JSON.parse(cleaned);
         const arr = Array.isArray(parsed)
@@ -91,7 +100,7 @@ function parseCookiesInput(raw) {
     }).filter(Boolean);
 }
 
-// === УСТАНОВКА КУК ПО ОДНОЙ ===
+// === УСТАНОВКА КУК ПО ОДНОЙ (чтобы одна битая кука не роняла всю сессию) ===
 async function setCookiesSafely(page, cookieObjects) {
     const failed = [];
     for (const cookie of cookieObjects) {
@@ -111,23 +120,26 @@ app.post('/api/pinterest', async (req, res) => {
 
     let browser = null;
     try {
-        // Разбираем proxy. Форматы: "host:port", "host:port:user:pass",
-        // "user:pass@host:port", "http://user:pass@host:port", либо объект.
+        // Разбираем proxy, если передан. Форматы: "host:port", "host:port:user:pass",
+        // "user:pass@host:port", либо объект { host, port, username, password }
         let proxyServerArg = null;
         let proxyAuth = null;
 
         if (proxy) {
             let proxyStr = typeof proxy === 'string' ? proxy.trim() : '';
-            proxyStr = proxyStr.replace(/^[a-zA-Z0-9]+:\/\//, ''); // срезаем http://, https://, socks5://
+            // Срезаем протокол, если он есть: http://, https://, socks5://
+            proxyStr = proxyStr.replace(/^[a-zA-Z0-9]+:\/\//, '');
             let host, port, username, password;
 
             if (typeof proxy === 'object') {
                 ({ host, port, username, password } = proxy);
             } else if (proxyStr.includes('@')) {
+                // user:pass@host:port
                 const [creds, hostPort] = proxyStr.split('@');
                 [username, password] = creds.split(':');
                 [host, port] = hostPort.split(':');
             } else {
+                // host:port  ИЛИ  host:port:user:pass
                 const parts = proxyStr.split(':');
                 if (parts.length === 4) {
                     [host, port, username, password] = parts;
@@ -148,7 +160,7 @@ app.post('/api/pinterest', async (req, res) => {
         if (proxyServerArg) {
             launchArgs.push(`--proxy-server=${proxyServerArg}`);
         } else {
-            console.warn('⚠️ Прокси не передан или не распознан — запрос пойдёт с IP сервера.');
+            console.warn('⚠️ Прокси не передан или не распознан — запрос пойдёт с IP сервера (может блокироваться Pinterest).');
         }
 
         browser = await puppeteer.launch({
@@ -158,14 +170,17 @@ app.post('/api/pinterest', async (req, res) => {
 
         const page = await (await browser.createIncognitoBrowserContext()).newPage();
 
+        // Если у прокси есть логин/пароль — авторизуемся
         if (proxyAuth) {
             await page.authenticate(proxyAuth);
         }
 
+        // Реалистичные заголовки/UA, чтобы меньше палиться как бот
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
         await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
         await page.setViewport({ width: 1366, height: 768 });
 
+        // Устанавливаем куки по одной, с отловом ошибок на каждую
         const failedCookies = await setCookiesSafely(page, cookieObjects);
 
         if (failedCookies.length) {
@@ -178,6 +193,17 @@ app.post('/api/pinterest', async (req, res) => {
                 success: false,
                 error: '❌ Ни одна кука не установлена: ' + JSON.stringify(failedCookies)
             });
+        }
+
+        // Диагностика: реально ли запросы идут через прокси
+        let outboundIp = 'неизвестно';
+        try {
+            await page.goto('https://api.ipify.org?format=json', { waitUntil: 'networkidle2', timeout: 20000 });
+            const ipBody = await page.evaluate(() => document.body.innerText);
+            outboundIp = JSON.parse(ipBody).ip;
+            console.log('🌐 Исходящий IP браузера:', outboundIp);
+        } catch (e) {
+            console.warn('⚠️ Не удалось проверить исходящий IP:', e.message);
         }
 
         await page.goto('https://www.pinterest.com/', { waitUntil: 'networkidle2', timeout: 60000 });
@@ -203,6 +229,7 @@ app.post('/api/pinterest', async (req, res) => {
                 try {
                     parsed = JSON.parse(rawText);
                 } catch (e) {
+                    // Pinterest вернул не JSON (например, "Invalid Request" или HTML-страницу ошибки)
                     return { ok: false, status: resp.status, rawText: rawText.slice(0, 300) };
                 }
 
@@ -213,7 +240,8 @@ app.post('/api/pinterest', async (req, res) => {
                 await browser.close();
                 return res.status(400).json({
                     success: false,
-                    error: `❌ Pinterest вернул некорректный ответ (статус ${userInfo.status}): ${userInfo.rawText || 'нет тела ответа'}`
+                    error: `❌ Pinterest вернул некорректный ответ (статус ${userInfo.status}): ${userInfo.rawText || 'нет тела ответа'}`,
+                    debugOutboundIp: outboundIp
                 });
             }
 
