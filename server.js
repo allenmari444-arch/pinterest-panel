@@ -11,29 +11,22 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
-
-// Раздаем статические файлы (интерфейс панели) из текущей корневой папки
 app.use(express.static(__dirname));
 
-// Проверка для Railway
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// === API ПУТЬ ===
 app.get('/api/pinterest', (req, res) => {
     res.json({ message: '✅ Pinterest Panel API готов к работе!' });
 });
 
-// === ПАРСИНГ И САНИТАЙЗИНГ КУК ===
 function parseCookiesInput(raw) {
     const cleaned = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
     if (!cleaned) return [];
 
-    // Приводим одну куку к формату, который гарантированно примет Puppeteer/CDP
     const sanitize = (c) => {
         if (!c || c.name === undefined) return null;
-
         const name = String(c.name).trim();
         const value = String(c.value ?? '').trim();
         if (!name) return null;
@@ -48,78 +41,49 @@ function parseCookiesInput(raw) {
         if (c.secure === true) cookieObj.secure = true;
         if (c.httpOnly === true) cookieObj.httpOnly = true;
 
-        // expires должен быть положительным Unix timestamp (в секундах).
-        // Отрицательные значения (-1) или отсутствие поля = сессионная кука.
         if (typeof c.expirationDate === 'number' && isFinite(c.expirationDate) && c.expirationDate > 0) {
             cookieObj.expires = Math.floor(c.expirationDate);
         }
 
-        // sameSite: Chrome требует secure=true, если sameSite = None
         if (c.sameSite && typeof c.sameSite === 'string') {
             const ss = c.sameSite.toLowerCase();
-            if (ss === 'strict') {
-                cookieObj.sameSite = 'Strict';
-            } else if (ss === 'lax') {
-                cookieObj.sameSite = 'Lax';
-            } else if (ss === 'none' || ss === 'no_restriction') {
+            if (ss === 'strict') cookieObj.sameSite = 'Strict';
+            else if (ss === 'lax') cookieObj.sameSite = 'Lax';
+            else if (ss === 'none' || ss === 'no_restriction') {
                 cookieObj.sameSite = 'None';
-                cookieObj.secure = true; // обязательно для SameSite=None
+                cookieObj.secure = true;
             }
-            // любые другие/некорректные значения (например null, "unspecified") — просто не ставим sameSite
         }
-
         return cookieObj;
     };
 
-    // Попытка распарсить как JSON (массив кук или объект { cookies: [...] })
     try {
         const parsed = JSON.parse(cleaned);
-        const arr = Array.isArray(parsed)
-            ? parsed
-            : (parsed && Array.isArray(parsed.cookies) ? parsed.cookies : null);
-
+        const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.cookies) ? parsed.cookies : null);
         if (arr) {
-            return arr
-                .filter(c => c && c.name !== undefined && c.value !== undefined)
-                .map(sanitize)
-                .filter(Boolean);
+            return arr.filter(c => c && c.name !== undefined && c.value !== undefined).map(sanitize).filter(Boolean);
         }
-    } catch (e) {
-        // не JSON — пробуем разобрать как строку "name=value; name2=value2"
-    }
+    } catch (e) {}
 
     return cleaned.split(';').map(part => part.trim()).filter(Boolean).map(pair => {
         const idx = pair.indexOf('=');
         if (idx === -1) return null;
-        return sanitize({
-            name: pair.slice(0, idx).trim(),
-            value: pair.slice(idx + 1).trim(),
-            domain: '.pinterest.com',
-            path: '/'
-        });
+        return sanitize({ name: pair.slice(0, idx).trim(), value: pair.slice(idx + 1).trim(), domain: '.pinterest.com', path: '/' });
     }).filter(Boolean);
 }
 
-// === УСТАНОВКА КУК ПО ОДНОЙ (чтобы одна битая кука не роняла всю сессию) ===
 async function setCookiesSafely(page, cookieObjects) {
     const failed = [];
     for (const cookie of cookieObjects) {
-        try {
-            await page.setCookie(cookie);
-        } catch (err) {
-            failed.push({ name: cookie.name, error: err.message });
-        }
+        try { await page.setCookie(cookie); }
+        catch (err) { failed.push({ name: cookie.name, error: err.message }); }
     }
     return failed;
 }
 
-// === ПРОСТАЯ ДИАГНОСТИКА ПРОКСИ (открывается прямо в браузере, терминал не нужен) ===
-// Использование: https://ваш-домен/api/proxy-check?proxy=http://user:pass@host:port
 app.get('/api/proxy-check', async (req, res) => {
     const proxy = req.query.proxy;
-    if (!proxy) {
-        return res.status(400).json({ success: false, error: 'Добавьте ?proxy=http://user:pass@host:port в адрес' });
-    }
+    if (!proxy) return res.status(400).json({ success: false, error: 'Добавьте ?proxy=http://user:pass@host:port в адрес' });
 
     let proxyStr = String(proxy).trim().replace(/^[a-zA-Z0-9]+:\/\//, '');
     let host, port, username, password;
@@ -134,27 +98,21 @@ app.get('/api/proxy-check', async (req, res) => {
         else if (parts.length === 2) [host, port] = parts;
     }
 
-    if (!host || !port) {
-        return res.status(400).json({ success: false, error: 'Не удалось разобрать proxy строку. Проверьте формат.' });
-    }
+    if (!host || !port) return res.status(400).json({ success: false, error: 'Не удалось разобрать proxy строку.' });
 
     let browser = null;
     const result = { proxyHost: host, proxyPort: port };
-
     try {
         browser = await puppeteer.launch({
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', `--proxy-server=${host}:${port}`],
             headless: 'new',
         });
         const page = await browser.newPage();
-        if (username && password) {
-            await page.authenticate({ username, password });
-        }
+        if (username && password) await page.authenticate({ username, password });
         page.setDefaultNavigationTimeout(15000);
 
-        // Шаг 1: проверяем что прокси вообще живой и отдаёт IP
         try {
-            const ipResp = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'networkidle2' });
+            const ipResp = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' });
             result.step1_proxyAlive = true;
             result.step1_outboundIp = JSON.parse(await ipResp.text()).ip;
         } catch (e) {
@@ -162,10 +120,9 @@ app.get('/api/proxy-check', async (req, res) => {
             result.step1_error = e.message;
         }
 
-        // Шаг 2: проверяем, пускает ли Pinterest этот IP на главную страницу
         if (result.step1_proxyAlive) {
             try {
-                const pinResp = await page.goto('https://www.pinterest.com/', { waitUntil: 'networkidle2' });
+                const pinResp = await page.goto('https://www.pinterest.com/', { waitUntil: 'domcontentloaded' });
                 result.step2_pinterestStatus = pinResp.status();
                 result.step2_pinterestOk = pinResp.status() < 400;
             } catch (e) {
@@ -189,26 +146,21 @@ app.post('/api/pinterest', async (req, res) => {
 
     let browser = null;
     try {
-        // Разбираем proxy, если передан. Форматы: "host:port", "host:port:user:pass",
-        // "user:pass@host:port", либо объект { host, port, username, password }
         let proxyServerArg = null;
         let proxyAuth = null;
 
         if (proxy) {
             let proxyStr = typeof proxy === 'string' ? proxy.trim() : '';
-            // Срезаем протокол, если он есть: http://, https://, socks5://
             proxyStr = proxyStr.replace(/^[a-zA-Z0-9]+:\/\//, '');
             let host, port, username, password;
 
             if (typeof proxy === 'object') {
                 ({ host, port, username, password } = proxy);
             } else if (proxyStr.includes('@')) {
-                // user:pass@host:port
                 const [creds, hostPort] = proxyStr.split('@');
                 [username, password] = creds.split(':');
                 [host, port] = hostPort.split(':');
             } else {
-                // host:port  ИЛИ  host:port:user:pass
                 const parts = proxyStr.split(':');
                 if (parts.length === 4) {
                     [host, port, username, password] = parts;
@@ -219,66 +171,45 @@ app.post('/api/pinterest', async (req, res) => {
 
             if (host && port) {
                 proxyServerArg = `${host}:${port}`;
-                if (username && password) {
-                    proxyAuth = { username, password };
-                }
+                if (username && password) proxyAuth = { username, password };
             }
         }
 
         const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'];
-        if (proxyServerArg) {
-            launchArgs.push(`--proxy-server=${proxyServerArg}`);
-        } else {
-            console.warn('⚠️ Прокси не передан или не распознан — запрос пойдёт с IP сервера (может блокироваться Pinterest).');
-        }
+        if (proxyServerArg) launchArgs.push(`--proxy-server=${proxyServerArg}`);
+        else console.warn('⚠️ Прокси не передан или не распознан.');
 
-        browser = await puppeteer.launch({
-            args: launchArgs,
-            headless: 'new',
-        });
+        browser = await puppeteer.launch({ args: launchArgs, headless: 'new' });
 
         const browserContext = typeof browser.createBrowserContext === 'function'
             ? await browser.createBrowserContext()
             : await browser.createIncognitoBrowserContext();
         const page = await browserContext.newPage();
 
-        // Если у прокси есть логин/пароль — авторизуемся
-        if (proxyAuth) {
-            await page.authenticate(proxyAuth);
-        }
+        if (proxyAuth) await page.authenticate(proxyAuth);
 
-        // Реалистичные заголовки/UA, чтобы меньше палиться как бот
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
         await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
         await page.setViewport({ width: 1366, height: 768 });
 
-        // Устанавливаем куки по одной, с отловом ошибок на каждую
         const failedCookies = await setCookiesSafely(page, cookieObjects);
-
-        if (failedCookies.length) {
-            console.warn('⚠️ Не удалось установить куки:', failedCookies);
-        }
-
+        if (failedCookies.length) console.warn('⚠️ Не удалось установить куки:', failedCookies);
         if (failedCookies.length === cookieObjects.length) {
             await browser.close();
-            return res.status(400).json({
-                success: false,
-                error: '❌ Ни одна кука не установлена: ' + JSON.stringify(failedCookies)
-            });
+            return res.status(400).json({ success: false, error: '❌ Ни одна кука не установлена: ' + JSON.stringify(failedCookies) });
         }
 
-        // Диагностика: реально ли запросы идут через прокси
         let outboundIp = 'неизвестно';
         try {
-            await page.goto('https://api.ipify.org?format=json', { waitUntil: 'networkidle2', timeout: 20000 });
+            await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 20000 });
             const ipBody = await page.evaluate(() => document.body.innerText);
             outboundIp = JSON.parse(ipBody).ip;
-            console.log('🌐 Исходящий IP браузера:', outboundIp);
         } catch (e) {
             console.warn('⚠️ Не удалось проверить исходящий IP:', e.message);
         }
 
-        await page.goto('https://www.pinterest.com/', { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.goto('https://www.pinterest.com/', { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await new Promise(r => setTimeout(r, 2000));
 
         const authCheck = await page.evaluate(() => {
             const csrfMatch = document.cookie.match(/csrftoken=([^;]+)/);
@@ -291,76 +222,172 @@ app.post('/api/pinterest', async (req, res) => {
         });
 
         const csrftoken = authCheck.csrftoken;
-
         if (!csrftoken) {
             await browser.close();
-            return res.status(400).json({ success: false, error: '❌ Сессия не активна (нет куки авторизации или они устарели).' });
+            return res.status(400).json({ success: false, error: '❌ Сессия не активна.' });
         }
 
-        // csrftoken ставится Pinterest даже анонимным посетителям — это НЕ признак логина.
-        // Реальный признак: кука _auth=1. Без неё аккаунт не залогинен, даже если csrftoken есть.
         if (authCheck.authValue !== '1') {
             await browser.close();
             return res.status(400).json({
                 success: false,
-                error: '❌ Куки устарели или невалидны: сессия анонимная (нет _auth=1). Экспортируйте куки заново, находясь залогиненной в аккаунт Pinterest в браузере.',
+                error: '❌ Куки устарели: сессия анонимная (нет _auth=1).',
                 debugOutboundIp: outboundIp,
                 debugCookieNamesFound: authCheck.allCookieNames
             });
         }
 
-        if (['add', 'update', 'info', 'token'].includes(action)) {
-            // Не делаем отдельный fetch к внутреннему API (Pinterest режет такие запросы
-            // отдельным антибот-фильтром). Вместо этого достаём имя пользователя
-            // прямо из уже загруженной и подтверждённо залогиненной страницы.
-            const domUserInfo = await page.evaluate(() => {
-                // Ищем встроенные данные состояния приложения по всей странице
-                const html = document.documentElement.innerHTML;
-                const unameMatch = html.match(/"username"\s*:\s*"([^"]+)"/);
-                if (unameMatch) return unameMatch[1];
-
-                // Запасной способ: ссылка на профиль в шапке сайта
-                const profileLink = document.querySelector('a[href^="/"][data-test-id*="avatar" i]')
-                    || document.querySelector('a[aria-label*="profile" i]')
-                    || document.querySelector('a[data-test-id="header-profile"]');
-                if (profileLink) {
-                    const href = profileLink.getAttribute('href') || '';
-                    const parts = href.split('/').filter(Boolean);
-                    if (parts.length) return parts[0];
-                }
-
-                return null;
-            });
-
-            const username = domUserInfo || null;
-            let boards = [];
-
-            // Достаём список досок для add/update/info (везде, где панель их ждёт) —
-            // через РЕАЛЬНУЮ навигацию на страницу досок (не через JS fetch к API),
-            // так как обычная навигация у нас уже подтверждённо не блокируется.
-            if (['add', 'update', 'info'].includes(action) && username) {
+        async function callPinterestResourceGet(resourceName, dataObj, token) {
+            return await page.evaluate(async (resourceName, dataObj, token) => {
+                const url = `https://www.pinterest.com/resource/${resourceName}/get/?source_url=%2F&data=${encodeURIComponent(JSON.stringify(dataObj))}`;
                 try {
-                    await page.goto(`https://www.pinterest.com/${username}/boards/`, { waitUntil: 'networkidle2', timeout: 30000 });
-                    boards = await page.evaluate(() => {
-                        const results = [];
-                        const seen = new Set();
-                        const links = Array.from(document.querySelectorAll('a[href]'));
-                        for (const a of links) {
-                            const href = a.getAttribute('href') || '';
-                            const parts = href.split('/').filter(Boolean);
-                            if (parts.length === 2) {
-                                const slug = parts[1];
-                                if (!seen.has(slug) && !['boards', 'pins', 'following', 'followers', '_saved', 'boards_feed'].includes(slug)) {
-                                    seen.add(slug);
-                                    const name = (a.textContent || '').trim() || slug;
-                                    results.push({ id: slug, name, pin_count: null, url: `https://www.pinterest.com${href}` });
+                    const resp = await fetch(url, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-CSRFToken': token,
+                            'Accept': 'application/json, text/javascript, */*, q=0.01'
+                        },
+                        credentials: 'same-origin'
+                    });
+                    const rawText = await resp.text();
+                    try { return { ok: resp.ok, status: resp.status, data: JSON.parse(rawText) }; }
+                    catch (e) { return { ok: false, status: resp.status, rawText: rawText.slice(0, 400) }; }
+                } catch (e) {
+                    return { ok: false, status: 0, rawText: e.message };
+                }
+            }, resourceName, dataObj, token);
+        }
+
+        async function callPinterestResourcePost(resourceName, dataObj, token) {
+            return await page.evaluate(async (resourceName, dataObj, token) => {
+                const url = `https://www.pinterest.com/resource/${resourceName}/create/`;
+                const body = new URLSearchParams({
+                    source_url: '/pin-builder/',
+                    data: JSON.stringify(dataObj)
+                });
+                try {
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-CSRFToken': token,
+                            'Accept': 'application/json, text/javascript, */*, q=0.01',
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                        },
+                        credentials: 'same-origin',
+                        body: body.toString()
+                    });
+                    const rawText = await resp.text();
+                    try { return { ok: resp.ok, status: resp.status, data: JSON.parse(rawText) }; }
+                    catch (e) { return { ok: false, status: resp.status, rawText: rawText.slice(0, 500) }; }
+                } catch (e) {
+                    return { ok: false, status: 0, rawText: e.message };
+                }
+            }, resourceName, dataObj, token);
+        }
+
+        if (action === 'test' || action === 'pin') {
+            if (!board || !image) {
+                await browser.close();
+                return res.status(400).json({ success: false, error: '❌ Не хватает обязательных полей: board (Board ID) и image (URL картинки).' });
+            }
+
+            const pinResp = await callPinterestResourcePost('PinResource', {
+                options: {
+                    board_id: String(board),
+                    title: title || '',
+                    description: description || '',
+                    link: link || '',
+                    alt_text: alt || '',
+                    image_url: image,
+                    method: 'scraped'
+                },
+                context: {}
+            }, csrftoken);
+
+            await browser.close();
+
+            if (pinResp.ok && pinResp.data?.resource_response?.data) {
+                const pin = pinResp.data.resource_response.data;
+                return res.json({
+                    success: true,
+                    message: '✅ Пин опубликован!',
+                    pinId: pin.id,
+                    pinUrl: pin.id ? `https://www.pinterest.com/pin/${pin.id}/` : undefined,
+                    debugOutboundIp: outboundIp
+                });
+            } else {
+                return res.status(400).json({
+                    success: false,
+                    error: `❌ Pinterest отклонил публикацию (статус ${pinResp.status}): ${pinResp.rawText || JSON.stringify(pinResp.data)?.slice(0, 400) || 'нет деталей'}`,
+                    debugOutboundIp: outboundIp
+                });
+            }
+        }
+
+        if (['add', 'update', 'info', 'token'].includes(action)) {
+            let username = null, fullAccount = {};
+            let boards = [];
+            let apiNote = null;
+
+            const userResp = await callPinterestResourceGet('UserResource', { options: { field_set_key: 'profile' }, context: {} }, csrftoken);
+            if (userResp.ok && userResp.data?.resource_response?.data) {
+                const u = userResp.data.resource_response.data;
+                username = u.username;
+                fullAccount = {
+                    id: u.id,
+                    full_name: u.full_name,
+                    profile_pic: u.image_xlarge_url || u.image_medium_url || null,
+                    created_at: u.created_at,
+                    pin_count: u.pin_count
+                };
+            } else {
+                apiNote = `UserResource: статус ${userResp.status} — ${userResp.rawText || ''}`;
+                username = await page.evaluate(() => {
+                    const html = document.documentElement.innerHTML;
+                    const m = html.match(/"username"\s*:\s*"([^"]+)"/);
+                    return m ? m[1] : null;
+                });
+            }
+
+            if (username) {
+                const boardsResp = await callPinterestResourceGet('BoardsResource', {
+                    options: { username, field_set_key: 'grid_item', filter_stories: false },
+                    context: {}
+                }, csrftoken);
+
+                if (boardsResp.ok && Array.isArray(boardsResp.data?.resource_response?.data)) {
+                    boards = boardsResp.data.resource_response.data.map(b => ({
+                        id: b.id,
+                        name: b.name,
+                        url: `https://www.pinterest.com${b.url || '/' + username + '/' + (b.slug || '') + '/'}`,
+                        cover: b.image_thumbnail_url || b.image_cover_url || null,
+                        pin_count: b.pin_count ?? null
+                    }));
+                } else {
+                    apiNote = (apiNote ? apiNote + ' | ' : '') + `BoardsResource: статус ${boardsResp.status} — ${boardsResp.rawText || ''}`;
+                    try {
+                        await page.goto(`https://www.pinterest.com/${username}/boards/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                        await new Promise(r => setTimeout(r, 1500));
+                        boards = await page.evaluate(() => {
+                            const results = [];
+                            const seen = new Set();
+                            const links = Array.from(document.querySelectorAll('a[href]'));
+                            for (const a of links) {
+                                const href = a.getAttribute('href') || '';
+                                const parts = href.split('/').filter(Boolean);
+                                if (parts.length === 2) {
+                                    const slug = parts[1];
+                                    if (!seen.has(slug) && !['boards', 'pins', 'following', 'followers', '_saved', 'boards_feed'].includes(slug)) {
+                                        seen.add(slug);
+                                        const name = (a.textContent || '').trim() || slug;
+                                        results.push({ id: slug, name, pin_count: null, url: `https://www.pinterest.com${href}` });
+                                    }
                                 }
                             }
-                        }
-                        return results.slice(0, 100);
-                    });
-                } catch (e) {
-                    console.warn('⚠️ Не удалось получить список досок:', e.message);
+                            return results.slice(0, 100);
+                        });
+                    } catch (e) {}
                 }
             }
 
@@ -371,9 +398,10 @@ app.post('/api/pinterest', async (req, res) => {
                 username: username || 'user',
                 token: csrftoken,
                 csrftoken,
+                account: fullAccount,
                 boards,
                 debugOutboundIp: outboundIp,
-                note: username ? undefined : 'Не удалось автоматически определить username со страницы — список досок недоступен без него.'
+                note: apiNote || undefined
             });
         }
 
