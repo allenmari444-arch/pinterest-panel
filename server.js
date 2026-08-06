@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { ProxyAgent } from 'undici';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,10 +49,10 @@ function cookieString(cookies) {
 }
 
 // Прямой HTTP-запрос к Pinterest с куками (без браузера)
-async function pinterestGet(url, cookies, extraHeaders = {}) {
+async function pinterestGet(url, cookies, proxy, extraHeaders = {}) {
     const cookieStr = cookieString(cookies);
     const csrftoken = cookies.find(c => c.name === 'csrftoken')?.value || '';
-    const resp = await fetch(url, {
+    const opts = {
         method: 'GET',
         headers: {
             'Cookie': cookieStr,
@@ -65,16 +66,18 @@ async function pinterestGet(url, cookies, extraHeaders = {}) {
             'Referer': 'https://www.pinterest.com/',
             ...extraHeaders
         }
-    });
+    };
+    if (proxy) opts.dispatcher = new ProxyAgent(proxy);
+    const resp = await fetch(url, opts);
     const text = await resp.text();
     try { return { ok: resp.ok, status: resp.status, data: JSON.parse(text) }; }
     catch (e) { return { ok: false, status: resp.status, raw: text.slice(0, 500) }; }
 }
 
-async function pinterestPost(url, body, cookies, extraHeaders = {}) {
+async function pinterestPost(url, body, cookies, proxy, extraHeaders = {}) {
     const cookieStr = cookieString(cookies);
     const csrftoken = cookies.find(c => c.name === 'csrftoken')?.value || '';
-    const resp = await fetch(url, {
+    const opts = {
         method: 'POST',
         headers: {
             'Cookie': cookieStr,
@@ -90,7 +93,9 @@ async function pinterestPost(url, body, cookies, extraHeaders = {}) {
             ...extraHeaders
         },
         body
-    });
+    };
+    if (proxy) opts.dispatcher = new ProxyAgent(proxy);
+    const resp = await fetch(url, opts);
     const text = await resp.text();
     try { return { ok: resp.ok, status: resp.status, data: JSON.parse(text) }; }
     catch (e) { return { ok: false, status: resp.status, raw: text.slice(0, 500) }; }
@@ -114,7 +119,7 @@ app.post('/api/pinterest', async (req, res) => {
             // Шаг 1: получаем инфо об аккаунте
             const userUrl = 'https://www.pinterest.com/resource/UserResource/get/?source_url=%2F&data=' +
                 encodeURIComponent(JSON.stringify({ options: { field_set_key: 'profile' }, context: {} }));
-            const userResp = await pinterestGet(userUrl, cookies);
+            const userResp = await pinterestGet(userUrl, cookies, proxy);
 
             if (userResp.ok && userResp.data?.resource_response?.data) {
                 const u = userResp.data.resource_response.data;
@@ -140,7 +145,7 @@ app.post('/api/pinterest', async (req, res) => {
                     encodeURIComponent('/' + username + '/boards/') + '&data=' +
                     encodeURIComponent(JSON.stringify({ options: { username, field_set_key: 'grid_item', filter_stories: false }, context: {} }));
 
-                const boardsResp = await pinterestGet(boardsUrl, cookies, {
+                const boardsResp = await pinterestGet(boardsUrl, cookies, proxy, {
                     'Referer': `https://www.pinterest.com/${username}/boards/`
                 });
 
@@ -195,6 +200,7 @@ app.post('/api/pinterest', async (req, res) => {
                 'https://www.pinterest.com/resource/PinResource/create/',
                 body,
                 cookies,
+                proxy,
                 { 'Referer': 'https://www.pinterest.com/pin-builder/' }
             );
 
