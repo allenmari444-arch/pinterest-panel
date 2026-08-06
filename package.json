@@ -7,9 +7,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "puppeteer": "^22.13.1",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "express": "^4.19.2"
   }
 }
