@@ -99,6 +99,8 @@
             <textarea id="newCookies" placeholder='csrftoken=...; _pinterest_sess=...  ИЛИ  [{"name":"csrftoken","value":"..."}, ...]'></textarea>
             <label>Прокси (необязательно, свой для аккаунта):</label>
             <input type="text" id="newProxy" placeholder="http://user:pass@host:port">
+            <label style="margin-top:14px;">Email (нужен для PostPin):</label>
+            <input type="text" id="newEmail" placeholder="your@email.com">
             <button class="btn" onclick="addAccount()">Добавить и проверить</button>
         </div>
     </div>
@@ -287,9 +289,26 @@ function setFullResult(data, ok) {
         return;
     }
     let text = data.message || 'Готово.';
-    if (data.username) text += `\nАккаунт: @${data.username}`;
-    if (data.token || data.csrftoken) text += `\nТокен (csrftoken): ${data.token || data.csrftoken}`;
-    if (Array.isArray(data.boards)) text += `\nДосок найдено: ${data.boards.length}`;
+    if (data.username) text += `\nlogin: ${data.username}`;
+    if (data.token || data.csrftoken) text += `\ntoken: ${data.token || data.csrftoken}`;
+    if (data.account && Object.keys(data.account).length) {
+        const a = data.account;
+        if (a.id) text += `\nid: ${a.id}`;
+        if (a.full_name) text += `\nfull_name: ${a.full_name}`;
+        if (a.username) text += `\nusername: ${a.username}`;
+        if (a.created_at) text += `\ncreated_at: ${a.created_at}`;
+        if (a.pin_count !== undefined) text += `\npin_count: ${a.pin_count}`;
+        if (a.profile_pic) text += `\nprofile_pic: ${a.profile_pic}`;
+    }
+    if (Array.isArray(data.boards) && data.boards.length) {
+        text += `\n\nboards (${data.boards.length}):`;
+        data.boards.forEach((b, i) => {
+            text += `\n  ${i+1}. id: ${b.id} | name: ${b.name}`;
+            if (b.url) text += ` | url: ${b.url}`;
+        });
+    }
+    if (data.pinId) text += `\npin_id: ${data.pinId}`;
+    if (data.pinUrl) text += `\npin_url: ${data.pinUrl}`;
     if (data.note) text += `\n⚠ ${data.note}`;
     out.innerText = text;
 }
@@ -306,15 +325,16 @@ async function readCookiesInput() {
 async function addAccount() {
     const cookies = await readCookiesInput();
     const proxy = document.getElementById('newProxy').value.trim() || localStorage.getItem(PROXY_KEY) || '';
+    const email = document.getElementById('newEmail').value.trim();
     if (!cookies) { alert('Загрузи файл cookies.json или вставь строку/JSON вручную'); return; }
     document.getElementById('resultOutput').style.color = '#eab308';
     document.getElementById('resultOutput').innerText = 'Проверка аккаунта...';
 
     try {
-        const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'add', cookies, proxy }) });
+        const res = await fetch('/api/pinterest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'add', cookies, proxy, email }) });
         const data = await res.json();
         if (data.success) {
-            accounts.push({ username: data.username, cookies, proxy, token: data.token || data.csrftoken, boards: data.boards || [] });
+            accounts.push({ username: data.username, cookies, proxy, email, token: data.token || data.csrftoken, boards: data.boards || [] });
             saveAccounts();
             activeIndex = accounts.length - 1;
             renderAccounts();
@@ -366,6 +386,7 @@ async function runAction(actionType) {
         action: actionType,
         cookies: acc ? acc.cookies : '',
         proxy: acc ? acc.proxy : (localStorage.getItem(PROXY_KEY) || ''),
+        email: acc ? acc.email : '',
         username: acc ? acc.username : '',
         board: document.getElementById('pinBoard').value,
         title: document.getElementById('pinTitle').value,
