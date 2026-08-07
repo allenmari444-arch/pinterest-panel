@@ -4,8 +4,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { URL } from 'url';
-import zlib from 'zlib';
-import tls from 'tls';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,133 +51,46 @@ function cookieString(cookies) {
     return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-// Делаем HTTP запрос через прокси с защитой от ошибок TLS
+// Надежный запрос через официальный HttpsProxyAgent (убирает EPROTO и wrong version number)
 function makeRequest(urlStr, options, body, proxy) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(urlStr);
-
-        const doDirectRequest = (reqOptions, reqBody) => {
-            const proto = parsedUrl.protocol === 'https:' ? https : http;
-            const req = proto.request(reqOptions, (resp) => {
-                const chunks = [];
-                resp.on('data', chunk => chunks.push(chunk));
-                resp.on('end', () => {
-                    const buffer = Buffer.concat(chunks);
-                    const encoding = resp.headers['content-encoding'];
-                    const decompress = encoding === 'gzip'
-                        ? cb => zlib.gunzip(buffer, cb)
-                        : encoding === 'deflate'
-                        ? cb => zlib.inflate(buffer, cb)
-                        : cb => cb(null, buffer);
-                    decompress((err, decoded) => {
-                        const text = err ? buffer.toString() : decoded.toString('utf8');
-                        resolve({ status: resp.statusCode, text, headers: resp.headers });
-                    });
-                });
-            });
-            req.on('error', reject);
-            if (reqBody) req.write(reqBody);
-            req.end();
+        
+        const reqOptions = {
+            method: options.method || 'GET',
+            headers: options.headers || {},
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || 443,
+            path: parsedUrl.pathname + (parsedUrl.search || ''),
+            rejectUnauthorized: false
         };
 
         if (proxy) {
             try {
-                const parsedProxy = new URL(proxy);
-                const proxyPort = parseInt(parsedProxy.port) || 80;
-                
-                const proxyHeaders = {
-                    'Host': `${parsedUrl.hostname}:443`
-                };
-                
-                if (parsedProxy.username) {
-                    const auth = Buffer.from(`${decodeURIComponent(parsedProxy.username)}:${decodeURIComponent(parsedProxy.password)}`).toString('base64');
-                    proxyHeaders['Proxy-Authorization'] = `Basic ${auth}`;
-                }
-
-                // CONNECT через HTTP прокси
-                const connectReq = http.request({
-                    host: parsedProxy.hostname,
-                    port: proxyPort,
-                    method: 'CONNECT',
-                    path: `${parsedUrl.hostname}:443`,
-                    headers: proxyHeaders
-                });
-
-                connectReq.on('connect', (res, socket, head) => {
-                    if (res.statusCode !== 200) {
-                        socket.destroy();
-                        return reject(new Error(`Прокси отклонил подключение: статус ${res.statusCode} ${res.statusMessage || 'Ошибка авторизации или прокси'}`));
-                    }
-
-                    // Безопасный запуск TLS поверх туннеля
-                    let tlsSocket;
-                    try {
-                        tlsSocket = tls.connect({
-                            socket: socket,
-                            servername: parsedUrl.hostname,
-                            rejectUnauthorized: false
-                        });
-                    } catch (tlsErr) {
-                        socket.destroy();
-                        return reject(new Error(`Ошибка TLS инициализации: ${tlsErr.message}`));
-                    }
-
-                    tlsSocket.on('secureConnect', () => {
-                        const reqOptions = {
-                            ...options,
-                            host: parsedUrl.hostname,
-                            port: 443,
-                            path: parsedUrl.pathname + (parsedUrl.search || ''),
-                            socket: tlsSocket,
-                            agent: false
-                        };
-                        const req2 = https.request(reqOptions, (resp) => {
-                            const chunks = [];
-                            resp.on('data', chunk => chunks.push(chunk));
-                            resp.on('end', () => {
-                                const buffer = Buffer.concat(chunks);
-                                const encoding = resp.headers['content-encoding'];
-                                const decompress = encoding === 'gzip'
-                                    ? cb => zlib.gunzip(buffer, cb)
-                                    : encoding === 'deflate'
-                                    ? cb => zlib.inflate(buffer, cb)
-                                    : cb => cb(null, buffer);
-                                decompress((err, decoded) => {
-                                    const text = err ? buffer.toString() : decoded.toString('utf8');
-                                    resolve({ status: resp.statusCode, text, headers: resp.headers });
-                                });
-                            });
-                        });
-                        req2.on('error', (err) => {
-                            socket.destroy();
-                            reject(err);
-                        });
-                        if (body) req2.write(body);
-                        req2.end();
-                    });
-
-                    tlsSocket.on('error', (err) => {
-                        socket.destroy();
-                        reject(new Error(`TLS ошибка соединения с прокси: ${err.message}`));
-                    });
-                });
-
-                connectReq.on('error', (err) => {
-                    reject(new Error(`Ошибка сокета прокси: ${err.message}`));
-                });
-                connectReq.end();
+                reqOptions.agent = new HttpsProxyAgent(proxy);
             } catch (err) {
-                reject(err);
+                return reject(new Error(`Ошибка инициализации прокси: ${err.message}`));
             }
-        } else {
-            const reqOptions = {
-                ...options,
-                host: parsedUrl.hostname,
-                port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-                path: parsedUrl.pathname + (parsedUrl.search || '')
-            };
-            doDirectRequest(reqOptions, body);
         }
+
+        const req = https.request(reqOptions, (resp) => {
+            const chunks = [];
+            resp.on('data', chunk => chunks.push(chunk));
+            resp.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                const text = buffer.toString('utf8');
+                resolve({ status: resp.statusCode, text, headers: resp.headers });
+            });
+        });
+
+        req.on('error', (err) => {
+            reject(new Error(`Ошибка сетевого запроса: ${err.message}`));
+        });
+
+        if (body) {
+            req.write(body);
+        }
+        req.end();
     });
 }
 
@@ -195,7 +107,6 @@ async function pinterestGet(url, cookies, proxy, extraHeaders = {}) {
             'X-Pinterest-AppState': 'active',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'identity',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
             'Referer': 'https://www.pinterest.com/',
             ...extraHeaders
@@ -219,7 +130,6 @@ async function pinterestPost(url, body, cookies, proxy, extraHeaders = {}) {
             'X-Pinterest-AppState': 'active',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'identity',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'Content-Length': Buffer.byteLength(bodyStr),
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -280,12 +190,13 @@ app.post('/api/pinterest', async (req, res) => {
                     encodeURIComponent('/' + username + '/boards/') + '&data=' +
                     encodeURIComponent(JSON.stringify({ options: { username, field_set_key: 'grid_item', filter_stories: false }, context: {} }));
 
-                const boardsResp = await pinterestGet(boardsUrl, cookies, proxy, {
+                const boardsResp = label => pinterestGet(boardsUrl, cookies, proxy, {
                     'Referer': `https://www.pinterest.com/${username}/boards/`
                 });
+                const boardsRes = await boardsResp();
 
-                if (boardsResp.ok && Array.isArray(boardsResp.data?.resource_response?.data)) {
-                    boards = boardsResp.data.resource_response.data.map(b => ({
+                if (boardsRes.ok && Array.isArray(boardsRes.data?.resource_response?.data)) {
+                    boards = boardsRes.data.resource_response.data.map(b => ({
                         id: b.id,
                         name: b.name,
                         url: b.url ? `https://www.pinterest.com${b.url}` : `https://www.pinterest.com/${username}/${b.slug || ''}/`,
@@ -295,7 +206,7 @@ app.post('/api/pinterest', async (req, res) => {
                 } else {
                     return res.status(400).json({
                         success: false,
-                        error: `❌ BoardsResource: статус ${boardsResp.status} — ${boardsResp.raw || JSON.stringify(boardsResp.data)?.slice(0, 300)}`
+                        error: `❌ BoardsResource: статус ${boardsRes.status} — ${boardsRes.raw || JSON.stringify(boardsRes.data)?.slice(0, 300)}`
                     });
                 }
             }
