@@ -315,11 +315,14 @@ function setFullResult(data, ok) {
 
 async function readCookiesInput() {
     const fileInput = document.getElementById('newCookiesFile');
+    let raw = '';
     if (fileInput.files && fileInput.files[0]) {
-        const text = await fileInput.files[0].text();
-        return normalizeCookies(text);
+        raw = await fileInput.files[0].text();
+    } else {
+        raw = document.getElementById('newCookies').value;
     }
-    return normalizeCookies(document.getElementById('newCookies').value);
+    raw = (raw || '').replace(/^\uFEFF/, '').replace(/^cookie:\s*/i, '').trim();
+    return raw;
 }
 
 async function addAccount() {
