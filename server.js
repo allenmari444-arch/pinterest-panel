@@ -52,7 +52,7 @@ function cookieString(cookies) {
     return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-// Делаем HTTP запрос через прокси с правильной проверкой CONNECT-статуса
+// Делаем HTTP запрос через прокси (нативный Node.js)
 function makeRequest(urlStr, options, body, proxy) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(urlStr);
@@ -85,8 +85,9 @@ function makeRequest(urlStr, options, body, proxy) {
             try {
                 const parsedProxy = new URL(proxy);
                 const proxyPort = parseInt(parsedProxy.port) || 80;
-                const proxyHeaders = { 
-                    'Host': `${parsedUrl.hostname}:443` 
+                
+                const proxyHeaders = {
+                    'Host': `${parsedUrl.hostname}:443`
                 };
                 
                 if (parsedProxy.username) {
@@ -94,7 +95,7 @@ function makeRequest(urlStr, options, body, proxy) {
                     proxyHeaders['Proxy-Authorization'] = `Basic ${auth}`;
                 }
 
-                // CONNECT через HTTP прокси
+                // CONNECT через HTTP прокси с полным путем
                 const connectReq = http.request({
                     host: parsedProxy.hostname,
                     port: proxyPort,
@@ -103,16 +104,15 @@ function makeRequest(urlStr, options, body, proxy) {
                     headers: proxyHeaders
                 });
 
-                connectReq.on('connect', (res, socket, head) => {
-                    // ИСПРАВЛЕНИЕ: Обязательно проверяем статус ответа прокси!
+                connectReq.on('connect', (res, socket) => {
                     if (res.statusCode !== 200) {
                         socket.destroy();
                         return reject(new Error(`Прокси отклонил подключение: статус ${res.statusCode} ${res.statusMessage}`));
                     }
 
-                    // TLS поверх проверенного туннеля
+                    // TLS поверх туннеля
                     const tlsSocket = tls.connect({
-                        socket: socket,
+                        socket,
                         servername: parsedUrl.hostname,
                         rejectUnauthorized: false
                     });
@@ -126,7 +126,6 @@ function makeRequest(urlStr, options, body, proxy) {
                             socket: tlsSocket,
                             agent: false
                         };
-                        
                         const req2 = https.request(reqOptions, (resp) => {
                             const chunks = [];
                             resp.on('data', chunk => chunks.push(chunk));
@@ -144,15 +143,12 @@ function makeRequest(urlStr, options, body, proxy) {
                                 });
                             });
                         });
-                        
                         req2.on('error', reject);
                         if (body) req2.write(body);
                         req2.end();
                     });
-
                     tlsSocket.on('error', reject);
                 });
-
                 connectReq.on('error', reject);
                 connectReq.end();
             } catch (err) {
@@ -234,14 +230,12 @@ app.post('/api/pinterest', async (req, res) => {
         if (['add', 'update', 'info', 'token'].includes(action)) {
             let username = null, fullAccount = {}, boards = [];
 
-            // Прогреваем сессию — сначала обычный GET на главную
             await pinterestGet('https://www.pinterest.com/', cookies, proxy, {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Upgrade-Insecure-Requests': '1'
             }).catch(() => {});
             await new Promise(r => setTimeout(r, 1000));
 
-            // Шаг 1: получаем инфо об аккаунте
             const userUrl = 'https://www.pinterest.com/resource/UserResource/get/?source_url=%2F&data=' +
                 encodeURIComponent(JSON.stringify({ options: { field_set_key: 'profile' }, context: {} }));
             const userResp = await pinterestGet(userUrl, cookies, proxy);
@@ -265,7 +259,6 @@ app.post('/api/pinterest', async (req, res) => {
                 });
             }
 
-            // Шаг 2: получаем доски с правильным Referer
             if (username) {
                 const boardsUrl = 'https://www.pinterest.com/resource/BoardsResource/get/?source_url=' +
                     encodeURIComponent('/' + username + '/boards/') + '&data=' +
