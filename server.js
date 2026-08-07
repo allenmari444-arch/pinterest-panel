@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { URL } from 'url';
+import zlib from 'zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,9 +59,21 @@ function makeRequest(urlStr, options, body, proxy) {
         const doRequest = (reqOptions, reqBody) => {
             const proto = parsedUrl.protocol === 'https:' ? https : http;
             const req = proto.request(reqOptions, (resp) => {
-                let data = '';
-                resp.on('data', chunk => data += chunk);
-                resp.on('end', () => resolve({ status: resp.statusCode, text: data, headers: resp.headers }));
+                const chunks = [];
+                resp.on('data', chunk => chunks.push(chunk));
+                resp.on('end', () => {
+                    const buffer = Buffer.concat(chunks);
+                    const encoding = resp.headers['content-encoding'];
+                    const decompress = encoding === 'gzip'
+                        ? cb => zlib.gunzip(buffer, cb)
+                        : encoding === 'deflate'
+                        ? cb => zlib.inflate(buffer, cb)
+                        : cb => cb(null, buffer);
+                    decompress((err, decoded) => {
+                        const text = err ? buffer.toString() : decoded.toString('utf8');
+                        resolve({ status: resp.statusCode, text, headers: resp.headers });
+                    });
+                });
             });
             req.on('error', reject);
             if (reqBody) req.write(reqBody);
@@ -122,6 +135,7 @@ async function pinterestGet(url, cookies, proxy, extraHeaders = {}) {
             'X-Pinterest-AppState': 'active',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'identity',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
             'Referer': 'https://www.pinterest.com/',
             ...extraHeaders
@@ -145,6 +159,7 @@ async function pinterestPost(url, body, cookies, proxy, extraHeaders = {}) {
             'X-Pinterest-AppState': 'active',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'identity',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'Content-Length': Buffer.byteLength(bodyStr),
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
