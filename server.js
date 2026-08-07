@@ -82,38 +82,37 @@ function makeRequest(urlStr, options, body, proxy) {
         };
 
         if (proxy) {
-            // Для HTTPS через прокси — сначала CONNECT тоннель
             const parsedProxy = new URL(proxy);
-            const proxyPort = parseInt(parsedProxy.port) || (parsedProxy.protocol === 'https:' ? 443 : 80);
-            const connectOpts = {
+            const proxyPort = parseInt(parsedProxy.port) || 80;
+            const proxyHeaders = { 'Host': `${parsedUrl.hostname}:443` };
+            if (parsedProxy.username) {
+                const auth = Buffer.from(`${decodeURIComponent(parsedProxy.username)}:${decodeURIComponent(parsedProxy.password)}`).toString('base64');
+                proxyHeaders['Proxy-Authorization'] = `Basic ${auth}`;
+            }
+            // CONNECT через HTTP прокси
+            const connectReq = http.request({
                 host: parsedProxy.hostname,
                 port: proxyPort,
                 method: 'CONNECT',
-                path: `${parsedUrl.hostname}:${parsedUrl.port || 443}`,
-                headers: { 'Host': `${parsedUrl.hostname}:${parsedUrl.port || 443}` }
-            };
-            if (parsedProxy.username) {
-                const auth = Buffer.from(`${decodeURIComponent(parsedProxy.username)}:${decodeURIComponent(parsedProxy.password)}`).toString('base64');
-                connectOpts.headers['Proxy-Authorization'] = `Basic ${auth}`;
-            }
-            const connectProto = parsedProxy.protocol === 'https:' ? https : http;
-            const connectReq = connectProto.request(connectOpts);
+                path: `${parsedUrl.hostname}:443`,
+                headers: proxyHeaders
+            });
             connectReq.on('connect', (res, socket) => {
-                // После CONNECT тоннеля всегда используем TLS (https) для запроса к Pinterest
+                // TLS поверх туннеля
                 const tlsSocket = tls.connect({
                     socket,
                     servername: parsedUrl.hostname,
                     rejectUnauthorized: false
-                }, () => {
+                });
+                tlsSocket.on('secureConnect', () => {
                     const reqOptions = {
                         ...options,
                         host: parsedUrl.hostname,
-                        port: parsedUrl.port || 443,
+                        port: 443,
                         path: parsedUrl.pathname + (parsedUrl.search || ''),
                         socket: tlsSocket,
                         agent: false
                     };
-                    // Делаем запрос напрямую через TLS сокет
                     const req2 = https.request(reqOptions, (resp) => {
                         const chunks = [];
                         resp.on('data', chunk => chunks.push(chunk));
