@@ -1,7 +1,9 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { ProxyAgent } from 'node:undici';
+import https from 'https';
+import http from 'http';
+import { URL } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,11 +50,69 @@ function cookieString(cookies) {
     return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-// Прямой HTTP-запрос к Pinterest с куками (без браузера)
+// Делаем HTTP запрос через прокси (нативный Node.js, без лишних пакетов)
+function makeRequest(urlStr, options, body, proxy) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(urlStr);
+
+        const doRequest = (reqOptions, reqBody) => {
+            const proto = parsedUrl.protocol === 'https:' ? https : http;
+            const req = proto.request(reqOptions, (resp) => {
+                let data = '';
+                resp.on('data', chunk => data += chunk);
+                resp.on('end', () => resolve({ status: resp.statusCode, text: data }));
+            });
+            req.on('error', reject);
+            if (reqBody) req.write(reqBody);
+            req.end();
+        };
+
+        if (proxy) {
+            // Для HTTPS через прокси — сначала CONNECT тоннель
+            const parsedProxy = new URL(proxy);
+            const proxyPort = parseInt(parsedProxy.port) || (parsedProxy.protocol === 'https:' ? 443 : 80);
+            const connectOpts = {
+                host: parsedProxy.hostname,
+                port: proxyPort,
+                method: 'CONNECT',
+                path: `${parsedUrl.hostname}:${parsedUrl.port || 443}`,
+                headers: { 'Host': `${parsedUrl.hostname}:${parsedUrl.port || 443}` }
+            };
+            if (parsedProxy.username) {
+                const auth = Buffer.from(`${decodeURIComponent(parsedProxy.username)}:${decodeURIComponent(parsedProxy.password)}`).toString('base64');
+                connectOpts.headers['Proxy-Authorization'] = `Basic ${auth}`;
+            }
+            const connectProto = parsedProxy.protocol === 'https:' ? https : http;
+            const connectReq = connectProto.request(connectOpts);
+            connectReq.on('connect', (res, socket) => {
+                const reqOptions = {
+                    ...options,
+                    host: parsedUrl.hostname,
+                    port: parsedUrl.port || 443,
+                    path: parsedUrl.pathname + (parsedUrl.search || ''),
+                    socket,
+                    agent: false
+                };
+                doRequest(reqOptions, body);
+            });
+            connectReq.on('error', reject);
+            connectReq.end();
+        } else {
+            const reqOptions = {
+                ...options,
+                host: parsedUrl.hostname,
+                port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+                path: parsedUrl.pathname + (parsedUrl.search || '')
+            };
+            doRequest(reqOptions, body);
+        }
+    });
+}
+
 async function pinterestGet(url, cookies, proxy, extraHeaders = {}) {
     const cookieStr = cookieString(cookies);
     const csrftoken = cookies.find(c => c.name === 'csrftoken')?.value || '';
-    const opts = {
+    const result = await makeRequest(url, {
         method: 'GET',
         headers: {
             'Cookie': cookieStr,
@@ -66,18 +126,16 @@ async function pinterestGet(url, cookies, proxy, extraHeaders = {}) {
             'Referer': 'https://www.pinterest.com/',
             ...extraHeaders
         }
-    };
-    if (proxy) opts.dispatcher = new ProxyAgent(proxy);
-    const resp = await fetch(url, opts);
-    const text = await resp.text();
-    try { return { ok: resp.ok, status: resp.status, data: JSON.parse(text) }; }
-    catch (e) { return { ok: false, status: resp.status, raw: text.slice(0, 500) }; }
+    }, null, proxy);
+    try { return { ok: result.status < 400, status: result.status, data: JSON.parse(result.text) }; }
+    catch (e) { return { ok: false, status: result.status, raw: result.text.slice(0, 500) }; }
 }
 
 async function pinterestPost(url, body, cookies, proxy, extraHeaders = {}) {
     const cookieStr = cookieString(cookies);
     const csrftoken = cookies.find(c => c.name === 'csrftoken')?.value || '';
-    const opts = {
+    const bodyStr = typeof body === 'string' ? body : body.toString();
+    const result = await makeRequest(url, {
         method: 'POST',
         headers: {
             'Cookie': cookieStr,
@@ -88,17 +146,14 @@ async function pinterestPost(url, body, cookies, proxy, extraHeaders = {}) {
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'en-US,en;q=0.9',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Content-Length': Buffer.byteLength(bodyStr),
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
             'Referer': 'https://www.pinterest.com/',
             ...extraHeaders
-        },
-        body
-    };
-    if (proxy) opts.dispatcher = new ProxyAgent(proxy);
-    const resp = await fetch(url, opts);
-    const text = await resp.text();
-    try { return { ok: resp.ok, status: resp.status, data: JSON.parse(text) }; }
-    catch (e) { return { ok: false, status: resp.status, raw: text.slice(0, 500) }; }
+        }
+    }, bodyStr, proxy);
+    try { return { ok: result.status < 400, status: result.status, data: JSON.parse(result.text) }; }
+    catch (e) { return { ok: false, status: result.status, raw: result.text.slice(0, 500) }; }
 }
 
 app.post('/api/pinterest', async (req, res) => {
