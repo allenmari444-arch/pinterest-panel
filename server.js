@@ -52,12 +52,12 @@ function cookieString(cookies) {
     return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-// Делаем HTTP запрос через прокси (нативный Node.js, без лишних пакетов)
+// Делаем HTTP запрос через прокси с правильной проверкой CONNECT-статуса
 function makeRequest(urlStr, options, body, proxy) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(urlStr);
 
-        const doRequest = (reqOptions, reqBody) => {
+        const doDirectRequest = (reqOptions, reqBody) => {
             const proto = parsedUrl.protocol === 'https:' ? https : http;
             const req = proto.request(reqOptions, (resp) => {
                 const chunks = [];
@@ -82,62 +82,82 @@ function makeRequest(urlStr, options, body, proxy) {
         };
 
         if (proxy) {
-            const parsedProxy = new URL(proxy);
-            const proxyPort = parseInt(parsedProxy.port) || 80;
-            const proxyHeaders = { 'Host': `${parsedUrl.hostname}:443` };
-            if (parsedProxy.username) {
-                const auth = Buffer.from(`${decodeURIComponent(parsedProxy.username)}:${decodeURIComponent(parsedProxy.password)}`).toString('base64');
-                proxyHeaders['Proxy-Authorization'] = `Basic ${auth}`;
-            }
-            // CONNECT через HTTP прокси
-            const connectReq = http.request({
-                host: parsedProxy.hostname,
-                port: proxyPort,
-                method: 'CONNECT',
-                path: `${parsedUrl.hostname}:443`,
-                headers: proxyHeaders
-            });
-            connectReq.on('connect', (res, socket) => {
-                // TLS поверх туннеля
-                const tlsSocket = tls.connect({
-                    socket,
-                    servername: parsedUrl.hostname,
-                    rejectUnauthorized: false
+            try {
+                const parsedProxy = new URL(proxy);
+                const proxyPort = parseInt(parsedProxy.port) || 80;
+                const proxyHeaders = { 
+                    'Host': `${parsedUrl.hostname}:443` 
+                };
+                
+                if (parsedProxy.username) {
+                    const auth = Buffer.from(`${decodeURIComponent(parsedProxy.username)}:${decodeURIComponent(parsedProxy.password)}`).toString('base64');
+                    proxyHeaders['Proxy-Authorization'] = `Basic ${auth}`;
+                }
+
+                // CONNECT через HTTP прокси
+                const connectReq = http.request({
+                    host: parsedProxy.hostname,
+                    port: proxyPort,
+                    method: 'CONNECT',
+                    path: `${parsedUrl.hostname}:443`,
+                    headers: proxyHeaders
                 });
-                tlsSocket.on('secureConnect', () => {
-                    const reqOptions = {
-                        ...options,
-                        host: parsedUrl.hostname,
-                        port: 443,
-                        path: parsedUrl.pathname + (parsedUrl.search || ''),
-                        socket: tlsSocket,
-                        agent: false
-                    };
-                    const req2 = https.request(reqOptions, (resp) => {
-                        const chunks = [];
-                        resp.on('data', chunk => chunks.push(chunk));
-                        resp.on('end', () => {
-                            const buffer = Buffer.concat(chunks);
-                            const encoding = resp.headers['content-encoding'];
-                            const decompress = encoding === 'gzip'
-                                ? cb => zlib.gunzip(buffer, cb)
-                                : encoding === 'deflate'
-                                ? cb => zlib.inflate(buffer, cb)
-                                : cb => cb(null, buffer);
-                            decompress((err, decoded) => {
-                                const text = err ? buffer.toString() : decoded.toString('utf8');
-                                resolve({ status: resp.statusCode, text, headers: resp.headers });
+
+                connectReq.on('connect', (res, socket, head) => {
+                    // ИСПРАВЛЕНИЕ: Обязательно проверяем статус ответа прокси!
+                    if (res.statusCode !== 200) {
+                        socket.destroy();
+                        return reject(new Error(`Прокси отклонил подключение: статус ${res.statusCode} ${res.statusMessage}`));
+                    }
+
+                    // TLS поверх проверенного туннеля
+                    const tlsSocket = tls.connect({
+                        socket: socket,
+                        servername: parsedUrl.hostname,
+                        rejectUnauthorized: false
+                    });
+
+                    tlsSocket.on('secureConnect', () => {
+                        const reqOptions = {
+                            ...options,
+                            host: parsedUrl.hostname,
+                            port: 443,
+                            path: parsedUrl.pathname + (parsedUrl.search || ''),
+                            socket: tlsSocket,
+                            agent: false
+                        };
+                        
+                        const req2 = https.request(reqOptions, (resp) => {
+                            const chunks = [];
+                            resp.on('data', chunk => chunks.push(chunk));
+                            resp.on('end', () => {
+                                const buffer = Buffer.concat(chunks);
+                                const encoding = resp.headers['content-encoding'];
+                                const decompress = encoding === 'gzip'
+                                    ? cb => zlib.gunzip(buffer, cb)
+                                    : encoding === 'deflate'
+                                    ? cb => zlib.inflate(buffer, cb)
+                                    : cb => cb(null, buffer);
+                                decompress((err, decoded) => {
+                                    const text = err ? buffer.toString() : decoded.toString('utf8');
+                                    resolve({ status: resp.statusCode, text, headers: resp.headers });
+                                });
                             });
                         });
+                        
+                        req2.on('error', reject);
+                        if (body) req2.write(body);
+                        req2.end();
                     });
-                    req2.on('error', reject);
-                    if (body) req2.write(body);
-                    req2.end();
+
+                    tlsSocket.on('error', reject);
                 });
-                tlsSocket.on('error', reject);
-            });
-            connectReq.on('error', reject);
-            connectReq.end();
+
+                connectReq.on('error', reject);
+                connectReq.end();
+            } catch (err) {
+                reject(err);
+            }
         } else {
             const reqOptions = {
                 ...options,
@@ -145,7 +165,7 @@ function makeRequest(urlStr, options, body, proxy) {
                 port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
                 path: parsedUrl.pathname + (parsedUrl.search || '')
             };
-            doRequest(reqOptions, body);
+            doDirectRequest(reqOptions, body);
         }
     });
 }
@@ -215,7 +235,6 @@ app.post('/api/pinterest', async (req, res) => {
             let username = null, fullAccount = {}, boards = [];
 
             // Прогреваем сессию — сначала обычный GET на главную
-            // Pinterest проверяет что перед API запросом была обычная навигация
             await pinterestGet('https://www.pinterest.com/', cookies, proxy, {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Upgrade-Insecure-Requests': '1'
@@ -246,7 +265,7 @@ app.post('/api/pinterest', async (req, res) => {
                 });
             }
 
-            // Шаг 2: получаем доски с правильным Referer (страница досок)
+            // Шаг 2: получаем доски с правильным Referer
             if (username) {
                 const boardsUrl = 'https://www.pinterest.com/resource/BoardsResource/get/?source_url=' +
                     encodeURIComponent('/' + username + '/boards/') + '&data=' +
@@ -286,7 +305,6 @@ app.post('/api/pinterest', async (req, res) => {
         if (action === 'test' || action === 'pin') {
             if (!board || !image) return res.status(400).json({ success: false, error: '❌ Нужны board (Board ID) и image (URL картинки).' });
 
-            const csrftoken = cookies.find(c => c.name === 'csrftoken')?.value || '';
             const body = new URLSearchParams({
                 source_url: '/pin-builder/',
                 data: JSON.stringify({
