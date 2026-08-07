@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { URL } from 'url';
+import zlib from 'zlib';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -51,14 +52,17 @@ function cookieString(cookies) {
     return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-// Надежный запрос через официальный HttpsProxyAgent (убирает EPROTO и wrong version number)
+// Запрос через HttpsProxyAgent с правильной распаковкой сжатых ответов (gzip/deflate)
 function makeRequest(urlStr, options, body, proxy) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(urlStr);
         
         const reqOptions = {
             method: options.method || 'GET',
-            headers: options.headers || {},
+            headers: {
+                ...options.headers,
+                'Accept-Encoding': 'gzip, deflate, br'
+            },
             hostname: parsedUrl.hostname,
             port: parsedUrl.port || 443,
             path: parsedUrl.pathname + (parsedUrl.search || ''),
@@ -78,8 +82,21 @@ function makeRequest(urlStr, options, body, proxy) {
             resp.on('data', chunk => chunks.push(chunk));
             resp.on('end', () => {
                 const buffer = Buffer.concat(chunks);
-                const text = buffer.toString('utf8');
-                resolve({ status: resp.statusCode, text, headers: resp.headers });
+                const encoding = resp.headers['content-encoding'];
+                
+                let decompress = (cb) => cb(null, buffer);
+                if (encoding === 'gzip') {
+                    decompress = (cb) => zlib.gunzip(buffer, cb);
+                } else if (encoding === 'deflate') {
+                    decompress = (cb) => zlib.inflate(buffer, cb);
+                } else if (encoding === 'br') {
+                    decompress = (cb) => zlib.brotliDecompress(buffer, cb);
+                }
+
+                decompress((err, decoded) => {
+                    const text = err ? buffer.toString('utf8') : decoded.toString('utf8');
+                    resolve({ status: resp.statusCode, text, headers: resp.headers });
+                });
             });
         });
 
@@ -190,10 +207,9 @@ app.post('/api/pinterest', async (req, res) => {
                     encodeURIComponent('/' + username + '/boards/') + '&data=' +
                     encodeURIComponent(JSON.stringify({ options: { username, field_set_key: 'grid_item', filter_stories: false }, context: {} }));
 
-                const boardsResp = label => pinterestGet(boardsUrl, cookies, proxy, {
+                const boardsRes = await pinterestGet(boardsUrl, cookies, proxy, {
                     'Referer': `https://www.pinterest.com/${username}/boards/`
                 });
-                const boardsRes = await boardsResp();
 
                 if (boardsRes.ok && Array.isArray(boardsRes.data?.resource_response?.data)) {
                     boards = boardsRes.data.resource_response.data.map(b => ({
