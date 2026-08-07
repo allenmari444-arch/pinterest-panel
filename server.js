@@ -52,7 +52,7 @@ function cookieString(cookies) {
     return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-// Делаем HTTP запрос через прокси (нативный Node.js)
+// Делаем HTTP запрос через прокси с защитой от ошибок TLS
 function makeRequest(urlStr, options, body, proxy) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(urlStr);
@@ -95,7 +95,7 @@ function makeRequest(urlStr, options, body, proxy) {
                     proxyHeaders['Proxy-Authorization'] = `Basic ${auth}`;
                 }
 
-                // CONNECT через HTTP прокси с полным путем
+                // CONNECT через HTTP прокси
                 const connectReq = http.request({
                     host: parsedProxy.hostname,
                     port: proxyPort,
@@ -104,18 +104,24 @@ function makeRequest(urlStr, options, body, proxy) {
                     headers: proxyHeaders
                 });
 
-                connectReq.on('connect', (res, socket) => {
+                connectReq.on('connect', (res, socket, head) => {
                     if (res.statusCode !== 200) {
                         socket.destroy();
-                        return reject(new Error(`Прокси отклонил подключение: статус ${res.statusCode} ${res.statusMessage}`));
+                        return reject(new Error(`Прокси отклонил подключение: статус ${res.statusCode} ${res.statusMessage || 'Ошибка авторизации или прокси'}`));
                     }
 
-                    // TLS поверх туннеля
-                    const tlsSocket = tls.connect({
-                        socket,
-                        servername: parsedUrl.hostname,
-                        rejectUnauthorized: false
-                    });
+                    // Безопасный запуск TLS поверх туннеля
+                    let tlsSocket;
+                    try {
+                        tlsSocket = tls.connect({
+                            socket: socket,
+                            servername: parsedUrl.hostname,
+                            rejectUnauthorized: false
+                        });
+                    } catch (tlsErr) {
+                        socket.destroy();
+                        return reject(new Error(`Ошибка TLS инициализации: ${tlsErr.message}`));
+                    }
 
                     tlsSocket.on('secureConnect', () => {
                         const reqOptions = {
@@ -143,13 +149,23 @@ function makeRequest(urlStr, options, body, proxy) {
                                 });
                             });
                         });
-                        req2.on('error', reject);
+                        req2.on('error', (err) => {
+                            socket.destroy();
+                            reject(err);
+                        });
                         if (body) req2.write(body);
                         req2.end();
                     });
-                    tlsSocket.on('error', reject);
+
+                    tlsSocket.on('error', (err) => {
+                        socket.destroy();
+                        reject(new Error(`TLS ошибка соединения с прокси: ${err.message}`));
+                    });
                 });
-                connectReq.on('error', reject);
+
+                connectReq.on('error', (err) => {
+                    reject(new Error(`Ошибка сокета прокси: ${err.message}`));
+                });
                 connectReq.end();
             } catch (err) {
                 reject(err);
