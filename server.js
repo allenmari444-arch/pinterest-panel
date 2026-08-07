@@ -5,6 +5,7 @@ import https from 'https';
 import http from 'http';
 import { URL } from 'url';
 import zlib from 'zlib';
+import tls from 'tls';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -98,15 +99,43 @@ function makeRequest(urlStr, options, body, proxy) {
             const connectProto = parsedProxy.protocol === 'https:' ? https : http;
             const connectReq = connectProto.request(connectOpts);
             connectReq.on('connect', (res, socket) => {
-                const reqOptions = {
-                    ...options,
-                    host: parsedUrl.hostname,
-                    port: parsedUrl.port || 443,
-                    path: parsedUrl.pathname + (parsedUrl.search || ''),
+                // После CONNECT тоннеля всегда используем TLS (https) для запроса к Pinterest
+                const tlsSocket = tls.connect({
                     socket,
-                    agent: false
-                };
-                doRequest(reqOptions, body);
+                    servername: parsedUrl.hostname,
+                    rejectUnauthorized: false
+                }, () => {
+                    const reqOptions = {
+                        ...options,
+                        host: parsedUrl.hostname,
+                        port: parsedUrl.port || 443,
+                        path: parsedUrl.pathname + (parsedUrl.search || ''),
+                        socket: tlsSocket,
+                        agent: false
+                    };
+                    // Делаем запрос напрямую через TLS сокет
+                    const req2 = https.request(reqOptions, (resp) => {
+                        const chunks = [];
+                        resp.on('data', chunk => chunks.push(chunk));
+                        resp.on('end', () => {
+                            const buffer = Buffer.concat(chunks);
+                            const encoding = resp.headers['content-encoding'];
+                            const decompress = encoding === 'gzip'
+                                ? cb => zlib.gunzip(buffer, cb)
+                                : encoding === 'deflate'
+                                ? cb => zlib.inflate(buffer, cb)
+                                : cb => cb(null, buffer);
+                            decompress((err, decoded) => {
+                                const text = err ? buffer.toString() : decoded.toString('utf8');
+                                resolve({ status: resp.statusCode, text, headers: resp.headers });
+                            });
+                        });
+                    });
+                    req2.on('error', reject);
+                    if (body) req2.write(body);
+                    req2.end();
+                });
+                tlsSocket.on('error', reject);
             });
             connectReq.on('error', reject);
             connectReq.end();
