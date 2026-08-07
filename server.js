@@ -60,7 +60,7 @@ function makeRequest(urlStr, options, body, proxy) {
             const req = proto.request(reqOptions, (resp) => {
                 let data = '';
                 resp.on('data', chunk => data += chunk);
-                resp.on('end', () => resolve({ status: resp.statusCode, text: data }));
+                resp.on('end', () => resolve({ status: resp.statusCode, text: data, headers: resp.headers }));
             });
             req.on('error', reject);
             if (reqBody) req.write(reqBody);
@@ -127,8 +127,8 @@ async function pinterestGet(url, cookies, proxy, extraHeaders = {}) {
             ...extraHeaders
         }
     }, null, proxy);
-    try { return { ok: result.status < 400, status: result.status, data: JSON.parse(result.text) }; }
-    catch (e) { return { ok: false, status: result.status, raw: result.text.slice(0, 500) }; }
+    try { return { ok: result.status < 400, status: result.status, data: JSON.parse(result.text), headers: result.headers }; }
+    catch (e) { return { ok: false, status: result.status, raw: result.text.slice(0, 800), headers: result.headers }; }
 }
 
 async function pinterestPost(url, body, cookies, proxy, extraHeaders = {}) {
@@ -198,7 +198,8 @@ app.post('/api/pinterest', async (req, res) => {
             } else {
                 return res.status(400).json({
                     success: false,
-                    error: `❌ UserResource: статус ${userResp.status} — ${userResp.raw || JSON.stringify(userResp.data)?.slice(0, 300)}`
+                    error: `❌ UserResource: статус ${userResp.status} — ${userResp.raw || JSON.stringify(userResp.data)?.slice(0, 300)}`,
+                    debugHeaders: userResp.headers || null
                 });
             }
 
