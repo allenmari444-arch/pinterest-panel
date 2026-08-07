@@ -171,6 +171,14 @@ app.post('/api/pinterest', async (req, res) => {
         if (['add', 'update', 'info', 'token'].includes(action)) {
             let username = null, fullAccount = {}, boards = [];
 
+            // Прогреваем сессию — сначала обычный GET на главную
+            // Pinterest проверяет что перед API запросом была обычная навигация
+            await pinterestGet('https://www.pinterest.com/', cookies, proxy, {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Upgrade-Insecure-Requests': '1'
+            }).catch(() => {});
+            await new Promise(r => setTimeout(r, 1000));
+
             // Шаг 1: получаем инфо об аккаунте
             const userUrl = 'https://www.pinterest.com/resource/UserResource/get/?source_url=%2F&data=' +
                 encodeURIComponent(JSON.stringify({ options: { field_set_key: 'profile' }, context: {} }));
